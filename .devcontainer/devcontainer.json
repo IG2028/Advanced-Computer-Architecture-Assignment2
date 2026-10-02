@@ -1,0 +1,22 @@
+{
+    "name": "ChampSim Dev Env",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "options": ["--platform", "linux/amd64"] 
+    },
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "bash"
+            },
+            "extensions": [
+                "ms-vscode.cpptools",
+                "ms-vscode.cpptools-extension-pack",
+                "eamodio.gitlens"
+            ]
+        }
+    },
+    "remoteUser": "root",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+    "workspaceFolder": "/workspace"
+}
