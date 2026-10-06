@@ -1,0 +1,15 @@
+/*
+ * Task 3 : prefetch-aware Dynamic I-RRIP.
+ *
+ * The policy itself is in dyn_irrip.l2c_repl (the assignment asks for Task 3
+ * to live there); this file only switches its PREFETCH_AWARE knob on, so the
+ * Task 2B and Task 3 binaries can be built side by side:
+ *
+ *   ./build_champsim.sh no  dyn_irrip    task2b
+ *   ./build_champsim.sh spp pf_dyn_irrip task3
+ *
+ * The build script copies this file to replacement/l2c_replacement.cc, so the
+ * quoted include below resolves to replacement/dyn_irrip.l2c_repl.
+ */
+#define PREFETCH_AWARE 1
+#include "dyn_irrip.l2c_repl"
