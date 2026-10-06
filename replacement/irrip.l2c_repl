@@ -1,0 +1,227 @@
+/*
+ * ============================================================================
+ *  Task 2A : Instruction-conscious RRIP (I-RRIP) for the L2C
+ * ============================================================================
+ *
+ *  Base: SRRIP from rrip.l2c_repl (2-bit RRPV, insert at maxRRPV-1, hit -> 0,
+ *  evict a line at maxRRPV after ageing the set).
+ *
+ *  I-RRIP changes all three parts of the policy so that instruction lines
+ *  outlive data lines, which is what reduces L2 instruction MPKI:
+ *
+ *    Insertion : instruction fills get a nearer RRPV (IRRIP_INSERT_INSTR, 1)
+ *                than data fills (IRRIP_INSERT_DATA, 2 = the SRRIP value).
+ *                Data are NOT pushed further than SRRIP would push them, so
+ *                a data line is never treated worse than under SRRIP at the
+ *                moment it is inserted; the bias comes from instructions
+ *                being moved closer.
+ *    Promotion : an instruction hit goes straight to RRPV 0; a data hit only
+ *                moves one step closer (frequency promotion), so a data line
+ *                needs two hits to reach the protection one instruction hit
+ *                buys. Writeback hits are not re-references from the core and
+ *                do not promote (SRRIP in rrip.l2c_repl promoted them).
+ *    Eviction  : the set is aged exactly like SRRIP, but when several lines
+ *                sit at maxRRPV a data line is chosen before an instruction
+ *                line (IRRIP_EVICT_MODE 1). Mode 2 goes further and prefers a
+ *                data line at maxRRPV-1 over an instruction line at maxRRPV.
+ *
+ *  The isInstruction argument of l2c_update_replacement_state is the packet's
+ *  `instruction` flag. A line is treated as an instruction line only for
+ *  LOAD / PREFETCH packets, which is the same rule fill_cache() uses to set
+ *  block.instruction and the rule main.cc uses for "L2C INSTRUCTION LOAD
+ *  MPKI" (address-translation packets therefore count as data).
+ *
+ *  Every knob is #ifndef-guarded so a sweep can override it from a wrapper
+ *  file (see scripts/make_variant.sh).
+ * ============================================================================
+ */
+
+#include "cache.h"
+
+// ============================================================================
+// =========================  TUNABLE PARAMETERS  =============================
+// ============================================================================
+#ifndef IRRIP_RRPV_BITS
+#define IRRIP_RRPV_BITS          2     // M; maxRRPV = 2^M - 1 (2 -> 3, 3 -> 7)
+#endif
+#define IRRIP_MAX_RRPV           ((1U << IRRIP_RRPV_BITS) - 1)
+
+// Insertion
+#ifndef IRRIP_INSERT_INSTR
+#define IRRIP_INSERT_INSTR       1     // RRPV for an instruction fill (0 = most protected)
+#endif
+#ifndef IRRIP_INSERT_DATA
+#define IRRIP_INSERT_DATA        (IRRIP_MAX_RRPV - 1)   // RRPV for a data / translation fill (SRRIP value)
+#endif
+#ifndef IRRIP_INSERT_WRITEBACK
+#define IRRIP_INSERT_WRITEBACK   (IRRIP_MAX_RRPV - 1)   // RRPV when a writeback allocates in L2
+#endif
+
+// Promotion
+#ifndef IRRIP_HIT_INSTR_RRPV
+#define IRRIP_HIT_INSTR_RRPV     0     // RRPV after an instruction hit
+#endif
+#ifndef IRRIP_DATA_HIT_MODE
+#define IRRIP_DATA_HIT_MODE      1     // 0: data hit -> RRPV 0 (SRRIP-HP)   1: data hit -> RRPV - IRRIP_DATA_HIT_STEP
+#endif
+#ifndef IRRIP_DATA_HIT_STEP
+#define IRRIP_DATA_HIT_STEP      1     // how far one data hit moves the line (mode 1)
+#endif
+#ifndef IRRIP_PROMOTE_ON_WB_HIT
+#define IRRIP_PROMOTE_ON_WB_HIT  0     // 1: writeback hits promote like data hits (rrip.l2c_repl behaviour)
+#endif
+
+// Eviction
+#ifndef IRRIP_EVICT_MODE
+#define IRRIP_EVICT_MODE         1     // 0: first line at maxRRPV (plain SRRIP)
+                                       // 1: among lines at maxRRPV prefer data over instruction
+                                       // 2: as 1, and a data line at maxRRPV-1 beats an instruction line at maxRRPV
+#endif
+// ============================================================================
+// ======================  END OF TUNABLE PARAMETERS  =========================
+// ============================================================================
+
+uint32_t irrip_rrpv[L2C_SET][L2C_WAY];
+
+// statistics only (reset when warmup ends)
+struct IRRIP_STATS {
+    uint64_t fill_instr, fill_data, fill_wb;
+    uint64_t hit_instr, hit_data, hit_wb;
+    uint64_t evict_instr, evict_data, evict_invalid;
+    uint64_t evict_tiebreak_used;     // a data line was chosen although an instruction line was found first
+};
+IRRIP_STATS irrip_stats;
+uint8_t irrip_stats_reset_done = 0;
+
+static inline bool irrip_is_instruction(uint32_t type, uint8_t isInstruction)
+{
+    return isInstruction && (type == LOAD || type == PREFETCH);
+}
+
+// initialize replacement state
+void CACHE::l2c_initialize_replacement()
+{
+    cout << "Initialize I-RRIP state for L2C: RRPV bits " << IRRIP_RRPV_BITS
+         << " insert instr " << IRRIP_INSERT_INSTR << " insert data " << IRRIP_INSERT_DATA
+         << " data hit mode " << IRRIP_DATA_HIT_MODE << " evict mode " << IRRIP_EVICT_MODE << endl;
+
+    for (int i = 0; i < L2C_SET; i++)
+        for (int j = 0; j < L2C_WAY; j++)
+            irrip_rrpv[i][j] = IRRIP_MAX_RRPV;
+}
+
+// find replacement victim
+uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type)
+{
+    // an empty way is always the best victim
+    for (uint32_t w = 0; w < L2C_WAY; w++)
+        if (!current_set[w].valid) {
+            irrip_stats.evict_invalid++;
+            return w;
+        }
+
+    // age the set until at least one line reaches maxRRPV
+    // (same result as SRRIP's "increment everyone and rescan" loop, done in one step)
+    uint32_t oldest = 0;
+    for (uint32_t w = 0; w < L2C_WAY; w++)
+        if (irrip_rrpv[set][w] > oldest)
+            oldest = irrip_rrpv[set][w];
+    if (oldest < IRRIP_MAX_RRPV) {
+        uint32_t age = IRRIP_MAX_RRPV - oldest;
+        for (uint32_t w = 0; w < L2C_WAY; w++)
+            irrip_rrpv[set][w] += age;
+    }
+
+    int first_any = -1, first_data = -1, near_data = -1;
+    for (uint32_t w = 0; w < L2C_WAY; w++) {
+        bool is_instr = current_set[w].instruction;
+        if (irrip_rrpv[set][w] == IRRIP_MAX_RRPV) {
+            if (first_any < 0) first_any = w;
+            if (!is_instr && first_data < 0) first_data = w;
+        }
+        else if (irrip_rrpv[set][w] == IRRIP_MAX_RRPV - 1 && !is_instr && near_data < 0)
+            near_data = w;
+    }
+    assert(first_any >= 0);
+
+    int victim = first_any;
+#if IRRIP_EVICT_MODE >= 1
+    if (first_data >= 0)
+        victim = first_data;
+#endif
+#if IRRIP_EVICT_MODE >= 2
+    if (first_data < 0 && near_data >= 0)
+        victim = near_data;          // only instruction lines are at maxRRPV: spare them, take a near-distant data line
+#endif
+    if (victim != first_any)
+        irrip_stats.evict_tiebreak_used++;
+
+    if (current_set[victim].instruction) irrip_stats.evict_instr++;
+    else                                 irrip_stats.evict_data++;
+
+    return victim;
+}
+
+// called on every cache hit and cache fill
+void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit, uint8_t isInstruction)
+{
+    if ((type == WRITEBACK) && ip)
+        assert(0);
+
+    if (warmup_complete[cpu] && !irrip_stats_reset_done) {
+        irrip_stats = IRRIP_STATS();
+        irrip_stats_reset_done = 1;
+    }
+
+    bool instr = irrip_is_instruction(type, isInstruction);
+
+    if (hit) {
+        // ---------------- promotion ----------------
+        if (type == WRITEBACK) {
+            irrip_stats.hit_wb++;
+            if (!IRRIP_PROMOTE_ON_WB_HIT)
+                return;              // a writeback is not a re-reference by the core
+        }
+        if (instr) {
+            irrip_stats.hit_instr++;
+            irrip_rrpv[set][way] = IRRIP_HIT_INSTR_RRPV;
+        }
+        else {
+            if (type != WRITEBACK)
+                irrip_stats.hit_data++;
+#if IRRIP_DATA_HIT_MODE == 0
+            irrip_rrpv[set][way] = 0;
+#else
+            irrip_rrpv[set][way] = (irrip_rrpv[set][way] > IRRIP_DATA_HIT_STEP) ? irrip_rrpv[set][way] - IRRIP_DATA_HIT_STEP : 0;
+#endif
+        }
+        return;
+    }
+
+    // ---------------- insertion ----------------
+    if (type == WRITEBACK) {
+        irrip_stats.fill_wb++;
+        irrip_rrpv[set][way] = IRRIP_INSERT_WRITEBACK;
+    }
+    else if (instr) {
+        irrip_stats.fill_instr++;
+        irrip_rrpv[set][way] = IRRIP_INSERT_INSTR;
+    }
+    else {
+        irrip_stats.fill_data++;
+        irrip_rrpv[set][way] = IRRIP_INSERT_DATA;
+    }
+}
+
+// use this function to print out your own stats at the end of simulation
+void CACHE::l2c_replacement_final_stats()
+{
+    cout << endl << "L2C I-RRIP final stats" << endl;
+    cout << "IRRIP fills instr: " << irrip_stats.fill_instr << " data: " << irrip_stats.fill_data << " writeback: " << irrip_stats.fill_wb << endl;
+    cout << "IRRIP hits instr: " << irrip_stats.hit_instr << " data: " << irrip_stats.hit_data << " writeback: " << irrip_stats.hit_wb << endl;
+    cout << "IRRIP evictions instr: " << irrip_stats.evict_instr << " data: " << irrip_stats.evict_data
+         << " invalid: " << irrip_stats.evict_invalid << " tiebreak_used: " << irrip_stats.evict_tiebreak_used << endl;
+    uint64_t lines = (uint64_t)L2C_SET * L2C_WAY;
+    cout << "IRRIP storage: RRPV " << lines << " x " << IRRIP_RRPV_BITS << " b = " << lines * IRRIP_RRPV_BITS
+         << " bits, instruction bit " << lines << " x 1 b = " << lines << " bits, TOTAL " << lines * (IRRIP_RRPV_BITS + 1) << " bits" << endl;
+}
