@@ -1814,6 +1814,9 @@ int main(int argc, char** argv)
         ooo_cpu[i].l1i_prefetcher_final_stats();
 	ooo_cpu[i].L1D.l1d_prefetcher_final_stats();
         ooo_cpu[i].L2C.l2c_prefetcher_final_stats();
+    #ifndef CRC2_COMPILE
+        ooo_cpu[i].L2C.l2c_replacement_final_stats();
+    #endif
 	ooo_cpu[i].DTLB.dtlb_prefetcher_final_stats();
 	ooo_cpu[i].STLB.stlb_prefetcher_final_stats();
     }
