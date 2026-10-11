@@ -14,7 +14,7 @@ if [ ${#names[@]} -eq 0 ]; then
 fi
 
 shopt -s nullglob
-traces=("$TRACE_DIR"/*.champsimtrace.xz "$TRACE_DIR"/*.champsimtrace.gz "$TRACE_DIR"/*.trace.xz "$TRACE_DIR"/*.trace.gz)
+traces=("$TRACE_DIR"/Trace1.gz "$TRACE_DIR"/Trace2.gz "$TRACE_DIR"/Trace3.gz)
 if [ ${#traces[@]} -eq 0 ]; then
   echo "no traces found in $TRACE_DIR" >&2; exit 1
 fi

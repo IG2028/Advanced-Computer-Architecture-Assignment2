@@ -15,7 +15,7 @@ CONFIGS=(
 
 WARMUP=${WARMUP:-25000000}
 SIM=${SIM:-25000000}
-TRACE_DIR=${TRACE_DIR:-../traces}
+TRACE_DIR=${TRACE_DIR:-traces}
 RESULTS_DIR=${RESULTS_DIR:-results}
 JOBS=${JOBS:-$(nproc 2>/dev/null || echo 4)}
 
