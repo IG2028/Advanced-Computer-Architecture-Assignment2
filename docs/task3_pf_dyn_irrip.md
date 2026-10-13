@@ -54,6 +54,8 @@ Extra storage: 1 prefetch bit per line (8,192), already present in `BLOCK` for C
 - vs. **dynamic I-RRIP alone**: same L2 policy, plus SPP's L1D coverage. The prefetch handling keeps SPP's extra L2 traffic from evicting the instruction lines I-RRIP protects.
 - The `spp_dyn_irrip` ablation isolates the effect of prefetch awareness. If Task 3 does not beat both on some trace, look at the `DIRRIP pf_fill` and `SPP` lines in that run. The usual fixes are a stricter SPP (`SPP_PT_LOOKAHEAD_CONF=3`, lower `SPP_DEGREE_HIGH`) or `DIRRIP_PF_REUSE_HIGH` 0.3–0.7.
 
+**Measured.** Geomean speedup: SPP alone 1.0079, dynamic I-RRIP alone 1.0062, the unaware pair 1.0146, and Task 3 1.0150. Task 3 is ahead of both parts on every trace. The two parts are nearly additive because they remove different misses: L1D data misses and L2 instruction misses. Prefetch awareness adds +0.04%, all on the L2 side (instruction MPKI 8.29 → 8.19). The gain is small because 96–98% of prefetched L2 lines are evicted without a demand hit, and prefetch fills are a small share of L2 fills. The same numbers show the 0.5 reuse threshold never fires. Details are in section 3-3 of the code's header comment.
+
 ## Tunable parameters (Task 3 only; Task 2B knobs still apply)
 
 | Knob | Default | Range | Trade-off | Class |

@@ -29,6 +29,8 @@ followers run I-RRIP  iff  want AND guard                     (DIRRIP_DECISION_M
 
 **Sensitivity study.** `scripts/run_sweep.sh` builds and runs five thresholds (0.05, 0.10, 0.15, 0.25, 0.40) and `scripts/plot_results.py` draws the bars and the threshold line charts. Each run also prints `DIRRIP mean_ratio` and `irrip_fraction`. If the mean ratios of the traces all fall on one side of the swept values, re-centre the five thresholds around the observed ratios so the study shows the switch actually happening.
 
+**What the sweep showed.** Geomean speedup was flat across the five thresholds (1.0059–1.0064), but the threshold did what it should. As T rises, the share of epochs in I-RRIP falls (mean 0.58 → 0.29), instruction MPKI rises and data MPKI falls. Speedup barely moves because the mean ratio is 0.43, 0.60 and 0.27 on the three traces: for Trace1 and Trace2 the ratio test passes at every swept T, so the duel guard decides. Only Trace3 reacts (I-RRIP fraction 1.0 → 0.31), and it has about 1 instruction MPKI. `scripts/tune.py` re-runs the study at 0.30–0.70, both with and without the guard. The full explanation is in section 2B-4 of the code's header comment.
+
 Storage at defaults: RRPV 16,384 + instruction bit 8,192 + counters 8×16 + epoch counter 15 + selector 1 = 24,720 bits.
 
 ## What I took from your Task 2B ideas

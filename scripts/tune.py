@@ -159,9 +159,12 @@ EXPERIMENTS = [
          why="Decision epoch: 4K accesses (fast, noisy; switches are already frequent at 16K) vs 64K (stable).",
          variants={"e4k": R(DIRRIP_EPOCH_ACCESSES=4096), "e64k": R(DIRRIP_EPOCH_ACCESSES=65536)}),
     dict(name="t2b_cost", task="task2b", pref="no", repl="dyn_irrip", ref="dyn_irrip", metric="l2c_load_mpki",
-         why="Instruction-miss cost in the duel: 1 = misses equal, 4 = instruction misses dominate. Static I-RRIP "
-             "currently beats dynamic, which suggests the guard is too eager to fall back, i.e. cost too low.",
-         variants={"c1": R(DIRRIP_INSTR_MISS_COST=1.0), "c4": R(DIRRIP_INSTR_MISS_COST=4.0)}),
+         why="Instruction-miss cost c in the duel guard. Static I-RRIP beats dynamic, so the guard falls back to "
+             "SRRIP too often (69% of epochs on Trace2). Over the whole run on Trace2 the I-RRIP leaders saved 350 "
+             "instruction misses and added 2,655 data misses against the SRRIP leaders, so the guard only prefers "
+             "I-RRIP when c > 7.6; c4 and c8 bracket that break-even point, c1 shows the opposite end.",
+         variants={"c1": R(DIRRIP_INSTR_MISS_COST=1.0), "c4": R(DIRRIP_INSTR_MISS_COST=4.0),
+                   "c8": R(DIRRIP_INSTR_MISS_COST=8.0)}),
     dict(name="t2b_hyst", task="task2b", pref="no", repl="dyn_irrip", ref="dyn_irrip", metric="l2c_load_mpki",
          why="Hysteresis and guard margin: no band vs. a wide band plus a 5% guard margin (fewer switches).",
          variants={"h0": R(DIRRIP_HYSTERESIS=0.0), "h15": R(DIRRIP_HYSTERESIS=0.15, DIRRIP_GUARD_MARGIN=0.05)}),

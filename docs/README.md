@@ -7,13 +7,32 @@
 | 2B Dynamic I-RRIP | `replacement/dyn_irrip.l2c_repl` (`PREFETCH_AWARE 0`) | [task2b_dyn_irrip.md](task2b_dyn_irrip.md) |
 | 3 Prefetch-aware Dynamic I-RRIP | `replacement/dyn_irrip.l2c_repl` (`PREFETCH_AWARE 1`), wrapper `replacement/pf_dyn_irrip.l2c_repl` | [task3_pf_dyn_irrip.md](task3_pf_dyn_irrip.md) |
 
+| Parameter tuning (all tasks) | `scripts/tune.py` | [tuning.md](tuning.md) |
+
+## Where each deliverable is answered
+
+The header comment of each code file answers the deliverables directly, with the numbers from your runs:
+
+| Deliverable | Where |
+|---|---|
+| SPP storage overhead, bit by bit | `prefetcher/spp.l1d_pref` header, section B (also printed by every run) |
+| How the accuracy thresholds were chosen | `spp.l1d_pref` section C |
+| Why each accuracy range gets its degree | `spp.l1d_pref` section D |
+| I-RRIP insertion, promotion and eviction rationale | `replacement/irrip.l2c_repl` header, section A |
+| Number of leader sets and their placement | `replacement/dyn_irrip.l2c_repl` section 2B-2 |
+| Decision logic | `dyn_irrip.l2c_repl` section 2B-3 |
+| Threshold sensitivity (5 thresholds) and its explanation | `dyn_irrip.l2c_repl` section 2B-4 |
+| Prefetch-packet handling in Task 3 and why | `dyn_irrip.l2c_repl` section 3-2 |
+| Tunable parameters, which are worth tuning and why | each file's parameter section, and [tuning.md](tuning.md) |
+| Results and why they match the design | each file's results section |
+
 Each code file has every knob in one `TUNABLE PARAMETERS` block, and every knob is `#ifndef`-guarded. A variant is a two-line wrapper (`scripts/make_variant.sh`), so sweeps never edit the real files.
 
 > This code was written and reviewed by reading it, without compiling or running it. Build every configuration once (`scripts/build_all.sh`) before starting the long runs. Compiler errors will show up there in a few minutes rather than hours into a sweep.
 
 ## Workflow
 
-Run everything from the repository root. Traces default to `../traces` (`TRACE_DIR=...` overrides it).
+Run everything from the repository root. Traces are `traces/Trace1.gz`, `traces/Trace2.gz` and `traces/Trace3.gz` (`TRACE_DIR=...` overrides the directory).
 
 ```bash
 scripts/build_all.sh                       # 8 configs: baseline ip_stride spp rrip irrip dyn_irrip spp_dyn_irrip spp_pf_dyn_irrip
@@ -21,7 +40,10 @@ JOBS=8 scripts/run_all.sh                  # 25M warmup + 25M sim on every trace
 scripts/run_sweep.sh                       # Task 2B: 5 thresholds -> results/dynT_<t>/
 python3 scripts/parse_results.py           # -> results/summary.csv, results/tables.md
 python3 scripts/plot_results.py            # -> results/plots/*.png   (pip install matplotlib)
+python3 scripts/tune.py list               # then `run`, `report`, `final`: see tuning.md
 ```
+
+**Plot conventions** (the same in every chart, as in the problem statement's examples): the baseline (no prefetcher, LRU L2) is never a bar or a legend entry. It is a dotted reference line: 1.0 for speedup, 0 for coverage, and a dotted tick at the baseline's value over each trace for IPC and MPKI. Speedup bars grow up or down from 1.0. Each configuration keeps one colour in every chart. The last group is the geomean for IPC and speedup and the arithmetic mean otherwise.
 
 The config list lives in `scripts/configs.sh`. Speedup and coverage use `baseline` (`no` prefetcher, `lru` L2) as the spec defines them.
 
