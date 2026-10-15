@@ -1,24 +1,525 @@
+// Uniform stride has priority over non-uniform stride.
+// We track the last three strides to distinguish between +2,+2,+2 and +2, +2, +3
+                                            
 #include "cache.h"
+//Parameters
 
+#ifndef SPP_ST_ENTRIES
+#define SPP_ST_ENTRIES 64  
+#endif
+#ifndef SPP_IP_TAG_BITS
+#define SPP_IP_TAG_BITS 10  
+#endif
+#ifndef SPP_ADDR_BITS
+#define SPP_ADDR_BITS 16  
+#endif
+#ifndef SPP_STRIDE_BITS
+#define SPP_STRIDE_BITS 7    
+#endif
 
-void CACHE::l1d_prefetcher_initialize() 
+//Uniform Stride Confidence
+#ifndef SPP_UCONF_BITS
+#define SPP_UCONF_BITS 2    
+#endif
+
+#ifndef SPP_UCONF_THRESHOLD
+#define SPP_UCONF_THRESHOLD 1    
+#endif
+
+#ifndef SPP_UNIFORM_REENTRY
+#define SPP_UNIFORM_REENTRY 3    
+#endif
+
+// PT Setup
+#ifndef SPP_SIG_BITS
+#define SPP_SIG_BITS 10
+#endif
+
+#ifndef SPP_SIG_SHIFT
+#define SPP_SIG_SHIFT 3    
+#endif
+#ifndef SPP_PT_CONF_BITS
+#define SPP_PT_CONF_BITS 2    
+#endif
+#ifndef SPP_PT_CONF_THRESHOLD
+#define SPP_PT_CONF_THRESHOLD 2   
+#endif
+#ifndef SPP_PT_LOOKAHEAD_CONF
+#define SPP_PT_LOOKAHEAD_CONF 2    
+#endif
+
+// Accuracy-throttling setup
+
+#ifndef SPP_EPOCH_ACCESSES
+#define SPP_EPOCH_ACCESSES 1024 
+#endif
+#ifndef SPP_MIN_EPOCH_ISSUED
+#define SPP_MIN_EPOCH_ISSUED 16   
+#endif
+#ifndef SPP_ACC_CTR_BITS
+#define SPP_ACC_CTR_BITS 16  
+#endif
+// accuracy range                 -> degree
+//   acc >= SPP_ACC_HIGH          -> SPP_DEGREE_HIGH
+//   SPP_ACC_MID  <= acc < HIGH   -> SPP_DEGREE_MID
+//   SPP_ACC_LOW  <= acc < MID    -> SPP_DEGREE_LOW
+//   SPP_ACC_TOXIC<= acc < LOW    -> SPP_DEGREE_POOR
+//   acc < SPP_ACC_TOXIC          -> SPP_DEGREE_TOXIC   (0 = shadow mode)
+#ifndef SPP_ACC_HIGH
+#define SPP_ACC_HIGH 0.75
+#endif
+#ifndef SPP_ACC_MID
+#define SPP_ACC_MID 0.50
+#endif
+#ifndef SPP_ACC_LOW
+#define SPP_ACC_LOW 0.25
+#endif
+#ifndef SPP_ACC_TOXIC
+#define SPP_ACC_TOXIC 0.10
+#endif
+#ifndef SPP_DEGREE_HIGH
+#define SPP_DEGREE_HIGH 4
+#endif
+#ifndef SPP_DEGREE_MID
+#define SPP_DEGREE_MID 3
+#endif
+#ifndef SPP_DEGREE_LOW
+#define SPP_DEGREE_LOW 2
+#endif
+#ifndef SPP_DEGREE_POOR
+#define SPP_DEGREE_POOR 1
+#endif
+#ifndef SPP_DEGREE_TOXIC
+#define SPP_DEGREE_TOXIC 0
+#endif
+#ifndef SPP_INIT_DEGREE
+#define SPP_INIT_DEGREE 2   
+#endif
+
+// Prefetch filter setup
+#ifndef SPP_FILTER_INDEX_BITS
+#define SPP_FILTER_INDEX_BITS 8
+#endif   
+#ifndef SPP_FILTER_TAG_BITS
+#define SPP_FILTER_TAG_BITS 8    
+#endif
+#ifndef SPP_L1_FILL_MSHR_LIMIT
+#define SPP_L1_FILL_MSHR_LIMIT (MSHR.SIZE >> 1)  
+#endif
+// Derived constants
+#define SPP_IP_TAG_MASK     ((1ULL << SPP_IP_TAG_BITS) - 1)
+#define SPP_ADDR_MASK       ((1ULL << SPP_ADDR_BITS) - 1)
+#define SPP_STRIDE_MASK     ((1ULL << SPP_STRIDE_BITS) - 1)
+#define SPP_STRIDE_MAX      ((1LL << (SPP_STRIDE_BITS - 1)) - 1)      // +63
+#define SPP_STRIDE_FAR      (-(1LL << (SPP_STRIDE_BITS - 1)))         // -64 : sentinel for "jump too large to encode"
+#define SPP_SIG_MASK        ((1U << SPP_SIG_BITS) - 1)
+#define SPP_PT_ENTRIES      (1U << SPP_SIG_BITS)
+#define SPP_UCONF_MAX       ((1U << SPP_UCONF_BITS) - 1)
+#define SPP_PT_CONF_MAX     ((1U << SPP_PT_CONF_BITS) - 1)
+#define SPP_FILTER_ENTRIES  (1U << SPP_FILTER_INDEX_BITS)
+#define SPP_FILTER_TAG_MASK ((1ULL << SPP_FILTER_TAG_BITS) - 1)
+#define SPP_ACC_CTR_MAX     ((1ULL << SPP_ACC_CTR_BITS) - 1)
+
+// FSM states (2 bits)
+#define SPP_STATE_INIT 0
+#define SPP_STATE_UNIFORM 1
+#define SPP_STATE_NON_UNIFORM 2
+
+// prefetch classes (1 bit in the filter, used for per-class statistics)
+#define SPP_CLASS_UNIFORM 0
+#define SPP_CLASS_PATTERN 1
+
+//Class defining signature table entry
+class SPP_ST_ENTRY {
+  public:
+    uint8_t  valid;
+    uint64_t ip_tag;        
+    uint64_t last_addr;    
+    int64_t  last_stride; 
+    uint32_t signature;    
+    uint8_t  state;        
+    uint8_t  uconf;       
+    uint32_t lru;           
+
+    SPP_ST_ENTRY() : valid(0), ip_tag(0), last_addr(0), last_stride(0), signature(0), state(SPP_STATE_INIT), uconf(0), lru(0) {}
+};
+
+//Class defining PT entry
+class SPP_PT_ENTRY {
+  public:
+    int64_t stride;          
+    uint8_t conf;           
+
+    SPP_PT_ENTRY() : stride(0), conf(0) {}
+};
+
+//Class defining Prefetch Filter entry
+class SPP_FILTER_ENTRY {
+  public:
+    uint8_t  valid;
+    uint64_t tag;           
+    uint8_t  useful;       
+    uint8_t  pf_class;      
+
+    SPP_FILTER_ENTRY() : valid(0), tag(0), useful(0), pf_class(0) {}
+};
+
+SPP_ST_ENTRY     spp_st[SPP_ST_ENTRIES];
+SPP_PT_ENTRY     spp_pt[SPP_PT_ENTRIES];
+SPP_FILTER_ENTRY spp_filter[SPP_FILTER_ENTRIES];
+
+// Throttle registers 
+uint64_t spp_issued_ctr = 0;        // decaying count of tracked prefetches
+uint64_t spp_useful_ctr = 0;        // decaying count of useful prefetches
+uint64_t spp_epoch_ctr  = 0;        // demand loads seen in the current epoch
+uint32_t spp_degree     = SPP_INIT_DEGREE;
+
+// Statistics
+struct SPP_STATS {
+    uint64_t accesses, st_misses, zero_stride, far_stride;
+    uint64_t issued_uniform, issued_pattern, useful_uniform, useful_pattern;
+    uint64_t shadow_predictions, duplicates_filtered, page_cross_stops, pq_full_drops;
+    uint64_t fill_l1, fill_l2;
+    uint64_t fallbacks_to_non_uniform, returns_to_uniform;
+    uint64_t triggers_uniform, triggers_pattern;
+    uint64_t epochs, epochs_at_degree[16];
+};
+SPP_STATS spp_stats;
+uint8_t   spp_stats_reset_done = 0;
+
+//helper functions
+
+// fold an IP into SPP_IP_TAG_BITS bits
+static inline uint64_t spp_ip_tag(uint64_t ip)
 {
-    std::cout << "------------------------------------------------" << std::endl;
+    return (ip ^ (ip >> SPP_IP_TAG_BITS) ^ (ip >> (2 * SPP_IP_TAG_BITS))) & SPP_IP_TAG_MASK;
+}
+
+// SPP Signature update
+static inline uint32_t spp_next_signature(uint32_t sig, int64_t stride)
+{
+    return ((sig << SPP_SIG_SHIFT) ^ ((uint64_t)stride & SPP_STRIDE_MASK)) & SPP_SIG_MASK;
+}
+
+// Checking stride usability
+static inline bool spp_usable_stride(int64_t stride)
+{
+    return stride != 0 && stride != SPP_STRIDE_FAR;
+}
+
+static inline uint32_t spp_filter_index(uint64_t cl_addr) { return cl_addr & (SPP_FILTER_ENTRIES - 1); }
+static inline uint64_t spp_filter_tag(uint64_t cl_addr)   { return (cl_addr >> SPP_FILTER_INDEX_BITS) & SPP_FILTER_TAG_MASK; }
+
+static inline bool spp_filter_contains(uint64_t cl_addr)
+{
+    SPP_FILTER_ENTRY &f = spp_filter[spp_filter_index(cl_addr)];
+    return f.valid && f.tag == spp_filter_tag(cl_addr);
+}
+
+// record a prefetch 
+static inline void spp_filter_insert(uint64_t cl_addr, uint8_t pf_class)
+{
+    SPP_FILTER_ENTRY &f = spp_filter[spp_filter_index(cl_addr)];
+    f.valid = 1;
+    f.tag = spp_filter_tag(cl_addr);
+    f.useful = 0;
+    f.pf_class = pf_class;
+
+    if (spp_issued_ctr < SPP_ACC_CTR_MAX)
+        spp_issued_ctr++;
+}
+
+// map a measured accuracy onto a degree
+static inline uint32_t spp_degree_for_accuracy(double acc)
+{
+    if (acc >= SPP_ACC_HIGH)  return SPP_DEGREE_HIGH;
+    if (acc >= SPP_ACC_MID)   return SPP_DEGREE_MID;
+    if (acc >= SPP_ACC_LOW)   return SPP_DEGREE_LOW;
+    if (acc >= SPP_ACC_TOXIC) return SPP_DEGREE_POOR;
+    return SPP_DEGREE_TOXIC;
+}
+
+static inline void spp_lru_touch(uint32_t index)
+{
+    for (uint32_t i = 0; i < SPP_ST_ENTRIES; i++)
+        if (spp_st[i].lru < spp_st[index].lru)
+            spp_st[i].lru++;
+    spp_st[index].lru = 0;
+}
+
+// train the PT entry selected by sig with the stride 
+static inline void spp_pt_train(uint32_t sig, int64_t stride)
+{
+    SPP_PT_ENTRY &p = spp_pt[sig];
+    if (p.conf > 0 && p.stride == stride) {
+        if (p.conf < SPP_PT_CONF_MAX)
+            p.conf++;
+    }
+    else if (p.conf > 0) {
+        p.conf--;                    // hysteresis: one wrong stride does not overwrite a learnt one
+    }
+    else {
+        p.stride = stride;           // empty / fully decayed entry: learn the new stride
+        p.conf = 1;
+    }
+}
+
+
+void CACHE::l1d_prefetcher_initialize()
+{
+
     std::cout << "        Stride Pattern Prefetcher (SPP)         " << std::endl;
-    std::cout << "------------------------------------------------" << std::endl;
+  
+    std::cout << "CPU " << cpu << " L1D SPP: ST " << SPP_ST_ENTRIES << " entries, PT " << SPP_PT_ENTRIES
+              << " entries, filter " << SPP_FILTER_ENTRIES << " entries, initial degree " << SPP_INIT_DEGREE << std::endl;
+
+    for (uint32_t i = 0; i < SPP_ST_ENTRIES; i++) {
+        spp_st[i] = SPP_ST_ENTRY();
+        spp_st[i].lru = i;
+    }
+    for (uint32_t i = 0; i < SPP_PT_ENTRIES; i++)
+        spp_pt[i] = SPP_PT_ENTRY();
+    for (uint32_t i = 0; i < SPP_FILTER_ENTRIES; i++)
+        spp_filter[i] = SPP_FILTER_ENTRY();
+
+    spp_issued_ctr = 0;
+    spp_useful_ctr = 0;
+    spp_epoch_ctr  = 0;
+    spp_degree     = SPP_INIT_DEGREE;
+    spp_stats      = SPP_STATS();
 }
 
 void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint8_t critical_ip_flag)
 {
-   
+    // Stats are cleared when warmup ennds
+    if (warmup_complete[cpu] && !spp_stats_reset_done) {
+        spp_stats = SPP_STATS();
+        spp_stats_reset_done = 1;
+    }
+    spp_stats.accesses++;
+
+    uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;
+
+    //Checking Accuracy
+    {
+        SPP_FILTER_ENTRY &f = spp_filter[spp_filter_index(cl_addr)];
+        if (f.valid && !f.useful && f.tag == spp_filter_tag(cl_addr)) {
+            f.useful = 1;
+            if (spp_useful_ctr < SPP_ACC_CTR_MAX)
+                spp_useful_ctr++;
+            if (f.pf_class == SPP_CLASS_UNIFORM) spp_stats.useful_uniform++;
+            else                                 spp_stats.useful_pattern++;
+        }
+    }
+
+    if (++spp_epoch_ctr >= SPP_EPOCH_ACCESSES) {
+        spp_epoch_ctr = 0;
+        if (spp_issued_ctr >= SPP_MIN_EPOCH_ISSUED) {
+            double acc = (double)spp_useful_ctr / (double)spp_issued_ctr;
+            if (acc > 1.0) acc = 1.0;
+            spp_degree = spp_degree_for_accuracy(acc);
+            // decay: halve both counters so recent epochs dominate
+            spp_issued_ctr >>= 1;
+            spp_useful_ctr >>= 1;
+        }
+        // else: too few samples, keep the current degree and keep accumulating
+        spp_stats.epochs++;
+        spp_stats.epochs_at_degree[spp_degree < 15 ? spp_degree : 15]++;
+    }
+
+    uint64_t tag = spp_ip_tag(ip);
+    uint32_t index = SPP_ST_ENTRIES;
+    for (uint32_t i = 0; i < SPP_ST_ENTRIES; i++) {
+        if (spp_st[i].valid && spp_st[i].ip_tag == tag) {
+            index = i;
+            break;
+        }
+    }
+
+    if (index == SPP_ST_ENTRIES) {
+        // miss: replace the LRU entry and wait for the next access to get a stride
+        spp_stats.st_misses++;
+        for (index = 0; index < SPP_ST_ENTRIES; index++)
+            if (spp_st[index].lru == (SPP_ST_ENTRIES - 1))
+                break;
+        assert(index < SPP_ST_ENTRIES);
+
+        uint32_t old_lru = spp_st[index].lru;
+        spp_st[index] = SPP_ST_ENTRY();
+        spp_st[index].lru = old_lru;
+        spp_st[index].valid = 1;
+        spp_st[index].ip_tag = tag;
+        spp_st[index].last_addr = cl_addr & SPP_ADDR_MASK;
+        spp_st[index].state = SPP_STATE_INIT;
+        spp_lru_touch(index);
+        return;
+    }
+
+    SPP_ST_ENTRY &e = spp_st[index];
+    spp_lru_touch(index);
+
+    //Stride calculation
+    int64_t delta = (int64_t)((cl_addr - e.last_addr) & SPP_ADDR_MASK);
+    if (delta >= (int64_t)(1LL << (SPP_ADDR_BITS - 1)))
+        delta -= (int64_t)(1LL << SPP_ADDR_BITS);
+
+    if (delta == 0) {             
+        spp_stats.zero_stride++;
+        return;
+    }
+
+    int64_t stride = delta;
+    if (stride > SPP_STRIDE_MAX || stride < -SPP_STRIDE_MAX) {
+        stride = SPP_STRIDE_FAR;    //outside page
+        spp_stats.far_stride++;
+    }
+
+
+    if (e.state == SPP_STATE_INIT) {
+        // first stride of this IP: no history to train the PT with yet
+        e.state = SPP_STATE_UNIFORM;
+        e.uconf = 0;
+    }
+    else {
+        bool match = (stride == e.last_stride);
+        if (match) {
+            if (e.uconf < SPP_UCONF_MAX)
+                e.uconf++;
+        }
+        else
+            e.uconf = 0;
+
+        if (e.state == SPP_STATE_UNIFORM && !match) {
+            e.state = SPP_STATE_NON_UNIFORM;           // uniform pattern broke: fall back
+            spp_stats.fallbacks_to_non_uniform++;
+        }
+        else if (e.state == SPP_STATE_NON_UNIFORM && e.uconf >= SPP_UNIFORM_REENTRY) {
+            e.state = SPP_STATE_UNIFORM;               // a stable stride is back: uniform has priority again
+            spp_stats.returns_to_uniform++;
+        }
+
+        spp_pt_train(e.signature, stride);             // "signature e.signature was followed by stride"
+    }
+
+    e.signature   = spp_next_signature(e.signature, stride);
+    e.last_stride = stride;
+    e.last_addr   = cl_addr & SPP_ADDR_MASK;
+
+    
+    // Prediction
+    bool shadow = (spp_degree == 0);                   // degree 0: predict but do not issue
+    uint32_t steps = shadow ? 1 : spp_degree;
+
+    bool use_uniform = (e.state == SPP_STATE_UNIFORM) && (e.uconf >= SPP_UCONF_THRESHOLD) && spp_usable_stride(stride);
+    uint8_t pf_class = use_uniform ? SPP_CLASS_UNIFORM : SPP_CLASS_PATTERN;
+
+    int64_t  base    = (int64_t)cl_addr;
+    uint32_t sig     = e.signature;                    // speculative signature for the PT walk
+    bool     issued_any = false;
+
+    for (uint32_t step = 1; step <= steps; step++) {
+        int64_t next_stride;
+
+        if (use_uniform) {
+            next_stride = stride;
+        }
+        else {
+            SPP_PT_ENTRY &p = spp_pt[sig];
+            uint32_t need = (step == 1) ? SPP_PT_CONF_THRESHOLD : SPP_PT_LOOKAHEAD_CONF;
+            if (p.conf < need || !spp_usable_stride(p.stride))
+                break;                                 
+            sig = spp_next_signature(sig, next_stride);
+        }
+
+        base += next_stride;
+        uint64_t pf_addr = ((uint64_t)base) << LOG2_BLOCK_SIZE;
+
+        // never leave the page of the triggering access
+        if ((pf_addr >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE)) {
+            spp_stats.page_cross_stops++;
+            break;
+        }
+
+        uint64_t pf_cl = (uint64_t)base;
+        if (spp_filter_contains(pf_cl)) {              // already prefetched recently
+            spp_stats.duplicates_filtered++;
+            continue;
+        }
+
+        if (shadow) {
+            spp_filter_insert(pf_cl, pf_class);       
+            spp_stats.shadow_predictions++;
+            continue;
+        }
+
+        int fill = (MSHR.occupancy < SPP_L1_FILL_MSHR_LIMIT) ? FILL_L1 : FILL_L2;
+        if (!prefetch_line(ip, addr, pf_addr, fill, 0)) {
+            spp_stats.pq_full_drops++;                 
+            break;
+        }
+
+        spp_filter_insert(pf_cl, pf_class);
+        issued_any = true;
+        if (fill == FILL_L1) spp_stats.fill_l1++; else spp_stats.fill_l2++;
+        if (pf_class == SPP_CLASS_UNIFORM) spp_stats.issued_uniform++;
+        else                               spp_stats.issued_pattern++;
+    }
+
+    if (issued_any) {
+        if (pf_class == SPP_CLASS_UNIFORM) spp_stats.triggers_uniform++;
+        else                               spp_stats.triggers_pattern++;
+    }
 }
 
 void CACHE::l1d_prefetcher_cache_fill(uint64_t v_addr, uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t v_evicted_addr, uint64_t evicted_addr, uint32_t metadata_in)
 {
-	return; //metadata_in;
+    // Usefulness is measured by the prefetch filter in operate(), so nothing is needed here.
+    return;
+}
+
+// ceil(log2(n)) for the storage report
+static uint32_t spp_log2_ceil(uint64_t n)
+{
+    uint32_t b = 0;
+    while ((1ULL << b) < n)
+        b++;
+    return b;
 }
 
 void CACHE::l1d_prefetcher_final_stats()
 {
+    // knobs
+    uint64_t st_entry_bits = 1 /*valid*/ + SPP_IP_TAG_BITS + SPP_ADDR_BITS + SPP_STRIDE_BITS + SPP_SIG_BITS
+                           + 2 /*state*/ + SPP_UCONF_BITS + spp_log2_ceil(SPP_ST_ENTRIES) /*lru*/;
+    uint64_t pt_entry_bits = SPP_STRIDE_BITS + SPP_PT_CONF_BITS;
+    uint64_t pf_entry_bits = 1 /*valid*/ + SPP_FILTER_TAG_BITS + 1 /*useful*/ + 1 /*class*/;
+    uint64_t epoch_bits    = spp_log2_ceil(SPP_EPOCH_ACCESSES + 1);
+    uint64_t degree_bits   = spp_log2_ceil(SPP_DEGREE_HIGH + 1);
+    uint64_t global_bits   = 2 * SPP_ACC_CTR_BITS + epoch_bits + degree_bits;
 
+    uint64_t st_bits = st_entry_bits * SPP_ST_ENTRIES;
+    uint64_t pt_bits = pt_entry_bits * SPP_PT_ENTRIES;
+    uint64_t pf_bits = pf_entry_bits * SPP_FILTER_ENTRIES;
+    uint64_t total   = st_bits + pt_bits + pf_bits + global_bits;
+
+    cout << endl << "CPU " << cpu << " L1D SPP final stats" << endl;
+    cout << "SPP storage: ST " << SPP_ST_ENTRIES << " x " << st_entry_bits << " b = " << st_bits << " bits" << " [valid 1, ip_tag " << SPP_IP_TAG_BITS << ", last_addr " << SPP_ADDR_BITS << ", last_stride " << SPP_STRIDE_BITS << ", signature " << SPP_SIG_BITS << ", state 2, uconf " << SPP_UCONF_BITS << ", lru " << spp_log2_ceil(SPP_ST_ENTRIES) << "]" << endl;
+    cout << "SPP storage: PT " << SPP_PT_ENTRIES << " x " << pt_entry_bits << " b = " << pt_bits << " bits" << " [stride " << SPP_STRIDE_BITS << ", conf " << SPP_PT_CONF_BITS << "]" << endl;
+    cout << "SPP storage: filter " << SPP_FILTER_ENTRIES << " x " << pf_entry_bits << " b = " << pf_bits << " bits" << " [valid 1, tag " << SPP_FILTER_TAG_BITS << ", useful 1, class 1]" << endl;
+    cout << "SPP storage: globals " << global_bits << " bits [issued " << SPP_ACC_CTR_BITS << ", useful " << SPP_ACC_CTR_BITS << ", epoch " << epoch_bits << ", degree " << degree_bits << "]" << endl;
+    cout << "SPP storage: TOTAL " << total << " bits = " << (total + 7) / 8 << " bytes" << endl;
+
+    // behaviour
+    uint64_t issued = spp_stats.issued_uniform + spp_stats.issued_pattern;
+    uint64_t useful = spp_stats.useful_uniform + spp_stats.useful_pattern;
+    cout << "SPP accesses: " << spp_stats.accesses << " st_misses: " << spp_stats.st_misses << " zero_stride: " << spp_stats.zero_stride << " far_stride: " << spp_stats.far_stride << endl;
+    cout << "SPP issued: " << issued << " uniform: " << spp_stats.issued_uniform << " pattern: " << spp_stats.issued_pattern << " fill_L1: " << spp_stats.fill_l1 << " fill_L2: " << spp_stats.fill_l2 << endl;
+    cout << "SPP useful(filter): " << useful << " uniform: " << spp_stats.useful_uniform << " pattern: " << spp_stats.useful_pattern << endl;
+    cout << "SPP filter accuracy: " << (issued ? 100.0 * useful / issued : 0.0) << " %" << " uniform: " << (spp_stats.issued_uniform ? 100.0 * spp_stats.useful_uniform / spp_stats.issued_uniform : 0.0) << " %" << " pattern: " << (spp_stats.issued_pattern ? 100.0 * spp_stats.useful_pattern / spp_stats.issued_pattern : 0.0) << " %" << endl;
+    cout << "SPP triggers uniform: " << spp_stats.triggers_uniform << " pattern: " << spp_stats.triggers_pattern << " fallbacks_to_non_uniform: " << spp_stats.fallbacks_to_non_uniform << " returns_to_uniform: " << spp_stats.returns_to_uniform << endl;
+    cout << "SPP duplicates_filtered: " << spp_stats.duplicates_filtered << " page_cross_stops: " << spp_stats.page_cross_stops << " pq_full_drops: " << spp_stats.pq_full_drops << " shadow_predictions: " << spp_stats.shadow_predictions << endl;
+    cout << "SPP final degree: " << spp_degree << " epochs: " << spp_stats.epochs << " degree histogram:";
+    for (uint32_t d = 0; d <= SPP_DEGREE_HIGH && d < 16; d++)
+        cout << " d" << d << "=" << spp_stats.epochs_at_degree[d];
+    cout << endl;
 }

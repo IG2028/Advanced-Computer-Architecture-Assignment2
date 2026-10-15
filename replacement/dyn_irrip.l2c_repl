@@ -1,0 +1,421 @@
+#include "cache.h"
+
+//Parameters
+// task selection
+#ifndef PREFETCH_AWARE
+#define PREFETCH_AWARE 0      // 0: Task 2B   1: Task 3
+#endif
+
+#ifndef DIRRIP_RRPV_BITS
+#define DIRRIP_RRPV_BITS 2
+#endif
+#define DIRRIP_MAX_RRPV ((1U << DIRRIP_RRPV_BITS) - 1)
+
+#ifndef DIRRIP_INSERT_INSTR
+#define DIRRIP_INSERT_INSTR 1
+#endif
+#ifndef DIRRIP_INSERT_DATA
+#define DIRRIP_INSERT_DATA (DIRRIP_MAX_RRPV - 1)
+#endif
+#ifndef DIRRIP_DATA_HIT_STEP
+#define DIRRIP_DATA_HIT_STEP 1      
+#endif
+#ifndef DIRRIP_EVICT_PREFER_DATA
+#define DIRRIP_EVICT_PREFER_DATA 1      
+#endif
+
+//SRRIP
+#ifndef DIRRIP_SRRIP_INSERT
+#define DIRRIP_SRRIP_INSERT (DIRRIP_MAX_RRPV - 1)
+#endif
+
+#ifndef DIRRIP_INSERT_WRITEBACK
+#define DIRRIP_INSERT_WRITEBACK (DIRRIP_MAX_RRPV - 1)
+#endif
+#ifndef DIRRIP_PROMOTE_ON_WB_HIT
+#define DIRRIP_PROMOTE_ON_WB_HIT 0
+#endif
+
+// Set dueling setup
+#ifndef DIRRIP_LEADER_SETS
+#define DIRRIP_LEADER_SETS 32  // leader sets PER POLICY 
+#endif
+#ifndef DIRRIP_DECISION_MODE
+#define DIRRIP_DECISION_MODE 2  // 0 ratio only, 1 duel only, 2 ratio AND duel
+#endif
+#ifndef DIRRIP_THRESHOLD
+#define DIRRIP_THRESHOLD 0.25  
+#endif
+#ifndef DIRRIP_RATIO_MISS_WEIGHT
+#define DIRRIP_RATIO_MISS_WEIGHT 1.0    
+#endif
+#ifndef DIRRIP_HYSTERESIS
+#define DIRRIP_HYSTERESIS 0.05   
+#endif
+#ifndef DIRRIP_INSTR_MISS_COST
+#define DIRRIP_INSTR_MISS_COST 2.0    
+#endif
+#ifndef DIRRIP_GUARD_MARGIN
+#define DIRRIP_GUARD_MARGIN 0.02   
+#endif
+#ifndef DIRRIP_EPOCH_ACCESSES
+#define DIRRIP_EPOCH_ACCESSES 16384  
+#endif
+#ifndef DIRRIP_MIN_SAMPLES
+#define DIRRIP_MIN_SAMPLES 64     
+#endif
+#ifndef DIRRIP_CTR_BITS
+#define DIRRIP_CTR_BITS 16     
+#endif
+#ifndef DIRRIP_INIT_IRRIP
+#define DIRRIP_INIT_IRRIP 0      
+#endif
+
+// Task3 setup
+#ifndef DIRRIP_PF_INSERT_FAR
+#define DIRRIP_PF_INSERT_FAR DIRRIP_MAX_RRPV        
+#endif
+#ifndef DIRRIP_PF_INSERT_NEAR
+#define DIRRIP_PF_INSERT_NEAR (DIRRIP_MAX_RRPV - 1)  
+#endif
+#ifndef DIRRIP_PF_USE_FILL_LEVEL
+#define DIRRIP_PF_USE_FILL_LEVEL 1      
+#endif
+#ifndef DIRRIP_PF_ADAPTIVE
+#define DIRRIP_PF_ADAPTIVE 1      
+#endif
+#ifndef DIRRIP_PF_REUSE_HIGH
+#define DIRRIP_PF_REUSE_HIGH 0.50   
+#endif
+#ifndef DIRRIP_PF_HIT_PROMOTE
+#define DIRRIP_PF_HIT_PROMOTE 0      
+#endif
+#ifndef DIRRIP_PF_FIRST_USE_AS_INSERT
+#define DIRRIP_PF_FIRST_USE_AS_INSERT 1   
+#endif
+#ifndef DIRRIP_PF_EVICT_FIRST
+#define DIRRIP_PF_EVICT_FIRST 1      
+#endif
+
+static_assert(L2C_SET % DIRRIP_LEADER_SETS == 0, "DIRRIP_LEADER_SETS must divide L2C_SET");
+static_assert(L2C_SET / DIRRIP_LEADER_SETS >= 2, "need at least two sets per leader region");
+
+#define DIRRIP_FOLLOWER 0
+#define DIRRIP_LEADER_SRRIP 1
+#define DIRRIP_LEADER_IRRIP 2
+#define DIRRIP_CTR_MAX ((1ULL << DIRRIP_CTR_BITS) - 1)
+
+uint32_t dirrip_rrpv[L2C_SET][L2C_WAY];
+uint8_t  dirrip_set_kind[L2C_SET];  // fixed by the index bits
+
+// Per-leader-kind counters: [kind][0 = SRRIP leaders, 1 = I-RRIP leaders]
+struct DIRRIP_LEADER_CTRS {
+    uint64_t acc_instr, acc_total, miss_instr, miss_total;
+};
+DIRRIP_LEADER_CTRS dirrip_ctr[2];
+
+uint64_t dirrip_epoch_ctr  = 0;
+uint8_t  dirrip_follow_irrip = DIRRIP_INIT_IRRIP; // the 1-bit policy selector for followers
+
+// Task 3 counters
+uint64_t dirrip_pf_used   = 0;          
+uint64_t dirrip_pf_unused = 0;          
+uint8_t  dirrip_pf_reuse_high = 0;     
+
+// Stats
+struct DIRRIP_STATS {
+    uint64_t epochs, epochs_irrip, switches_to_irrip, switches_to_srrip, skipped_decisions;
+    double   last_ratio, ratio_sum, last_cost_srrip, last_cost_irrip;
+    uint64_t miss_instr[3], miss_data[3], acc_instr[3], acc_data[3];   
+    uint64_t pf_fill_far, pf_fill_near_l2only, pf_fill_near_reuse, pf_hits, pf_first_use, pf_evicted_unused;
+    uint64_t pf_epochs_reuse_high;
+};
+DIRRIP_STATS dirrip_stats;
+uint8_t dirrip_stats_reset_done = 0;
+
+static inline bool dirrip_is_instruction(uint32_t type, uint8_t isInstruction)
+{
+    return isInstruction && (type == LOAD || type == PREFETCH);
+}
+
+static inline bool dirrip_is_demand(uint32_t type)
+{
+    return type == LOAD || type == RFO || type == LOAD_TRANSLATION;
+}
+
+static inline void dirrip_sat_inc(uint64_t &c)
+{
+    if (c < DIRRIP_CTR_MAX)
+        c++;
+}
+
+static inline bool dirrip_set_uses_irrip(uint32_t set)
+{
+    if (dirrip_set_kind[set] == DIRRIP_LEADER_SRRIP) return false;
+    if (dirrip_set_kind[set] == DIRRIP_LEADER_IRRIP) return true;
+    return dirrip_follow_irrip;
+}
+
+//decision
+static void dirrip_decide()
+{
+    DIRRIP_LEADER_CTRS &s = dirrip_ctr[0];
+    DIRRIP_LEADER_CTRS &i = dirrip_ctr[1];
+
+    dirrip_stats.epochs++;
+
+    if (s.acc_total < DIRRIP_MIN_SAMPLES) {
+        dirrip_stats.skipped_decisions++;    // too little leader traffic
+    }
+    else {
+        // ratio from leaders
+        double w = DIRRIP_RATIO_MISS_WEIGHT;
+        double ratio = ((double)s.acc_instr + w * (double)s.miss_instr) / ((double)s.acc_total + w * (double)s.miss_total);
+        bool ratio_wants;
+        if (dirrip_follow_irrip) ratio_wants = ratio >= DIRRIP_THRESHOLD * (1.0 - DIRRIP_HYSTERESIS);
+        else                     ratio_wants = ratio >  DIRRIP_THRESHOLD * (1.0 + DIRRIP_HYSTERESIS);
+
+        // duel guard
+        double c = DIRRIP_INSTR_MISS_COST;
+        double cost_s = c * (double)s.miss_instr + (double)(s.miss_total - s.miss_instr);
+        double cost_i = c * (double)i.miss_instr + (double)(i.miss_total - i.miss_instr);
+        bool duel_ok = cost_i <= cost_s * (1.0 + DIRRIP_GUARD_MARGIN);
+
+        (void)ratio_wants; (void)duel_ok;    // one of them is unused in modes 0 and 1
+        bool want;
+#if DIRRIP_DECISION_MODE == 0
+        want = ratio_wants;
+#elif DIRRIP_DECISION_MODE == 1
+        want = duel_ok;
+#else
+        want = ratio_wants && duel_ok;
+#endif
+        if (want && !dirrip_follow_irrip) dirrip_stats.switches_to_irrip++;
+        if (!want && dirrip_follow_irrip) dirrip_stats.switches_to_srrip++;
+        dirrip_follow_irrip = want;
+
+        dirrip_stats.last_ratio = ratio;
+        dirrip_stats.ratio_sum += ratio;
+        dirrip_stats.last_cost_srrip = cost_s;
+        dirrip_stats.last_cost_irrip = cost_i;
+
+        // decay so the next epochs dominate
+        for (int k = 0; k < 2; k++) {
+            dirrip_ctr[k].acc_instr  >>= 1;
+            dirrip_ctr[k].acc_total  >>= 1;
+            dirrip_ctr[k].miss_instr >>= 1;
+            dirrip_ctr[k].miss_total >>= 1;
+        }
+    }
+    if (dirrip_follow_irrip)
+        dirrip_stats.epochs_irrip++;
+
+#if PREFETCH_AWARE
+    uint64_t seen = dirrip_pf_used + dirrip_pf_unused;
+    if (seen >= DIRRIP_MIN_SAMPLES) {
+        dirrip_pf_reuse_high = ((double)dirrip_pf_used / (double)seen) >= DIRRIP_PF_REUSE_HIGH;
+        dirrip_pf_used >>= 1;
+        dirrip_pf_unused >>= 1;
+    }
+    if (dirrip_pf_reuse_high)
+        dirrip_stats.pf_epochs_reuse_high++;
+#endif
+}
+
+// initialize replacement state
+void CACHE::l2c_initialize_replacement()
+{
+    cout << "Initialize Dynamic I-RRIP state for L2C: prefetch aware " << PREFETCH_AWARE
+         << " leader sets " << DIRRIP_LEADER_SETS << "+" << DIRRIP_LEADER_SETS
+         << " decision mode " << DIRRIP_DECISION_MODE << " threshold " << DIRRIP_THRESHOLD
+         << " epoch " << DIRRIP_EPOCH_ACCESSES << endl;
+
+    const uint32_t region = L2C_SET / DIRRIP_LEADER_SETS;
+    for (uint32_t set = 0; set < L2C_SET; set++) {
+        uint32_t r = (set / region) % region;
+        uint32_t o = set % region;
+        if (o == r)                    dirrip_set_kind[set] = DIRRIP_LEADER_SRRIP;
+        else if (o == region - 1 - r)  dirrip_set_kind[set] = DIRRIP_LEADER_IRRIP;
+        else                           dirrip_set_kind[set] = DIRRIP_FOLLOWER;
+
+        for (uint32_t w = 0; w < L2C_WAY; w++)
+            dirrip_rrpv[set][w] = DIRRIP_MAX_RRPV;
+    }
+}
+
+// find replacement victim
+uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type)
+{
+    for (uint32_t w = 0; w < L2C_WAY; w++)
+        if (!current_set[w].valid)
+            return w;
+
+    // age the set till maxRRPV 
+    uint32_t oldest = 0;
+    for (uint32_t w = 0; w < L2C_WAY; w++)
+        if (dirrip_rrpv[set][w] > oldest)
+            oldest = dirrip_rrpv[set][w];
+    if (oldest < DIRRIP_MAX_RRPV) {
+        uint32_t age = DIRRIP_MAX_RRPV - oldest;
+        for (uint32_t w = 0; w < L2C_WAY; w++)
+            dirrip_rrpv[set][w] += age;
+    }
+
+    bool irrip = dirrip_set_uses_irrip(set);
+    int first_any = -1, first_data = -1, first_dead_pf = -1;
+    for (uint32_t w = 0; w < L2C_WAY; w++) {
+        if (dirrip_rrpv[set][w] != DIRRIP_MAX_RRPV)
+            continue;
+        if (first_any < 0) first_any = w;
+        if (!current_set[w].instruction && first_data < 0) first_data = w;
+        if (current_set[w].prefetch && !current_set[w].translation && first_dead_pf < 0)
+            first_dead_pf = w;     
+    }
+    assert(first_any >= 0);
+
+#if PREFETCH_AWARE && DIRRIP_PF_EVICT_FIRST
+    if (first_dead_pf >= 0)
+        return first_dead_pf;
+#endif
+    if (irrip && DIRRIP_EVICT_PREFER_DATA && first_data >= 0)
+        return first_data;
+    return first_any;
+}
+
+// called on every cache hit and cache fill
+void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit, uint8_t isInstruction)
+{
+    if ((type == WRITEBACK) && ip)
+        assert(0);
+
+    if (warmup_complete[cpu] && !dirrip_stats_reset_done) {
+        dirrip_stats = DIRRIP_STATS();
+        dirrip_stats_reset_done = 1;
+    }
+
+    bool instr = dirrip_is_instruction(type, isInstruction);
+    bool irrip = dirrip_set_uses_irrip(set);
+    uint8_t kind = dirrip_set_kind[set];
+
+    // dueling counters
+    if (dirrip_is_demand(type)) {
+        if (kind != DIRRIP_FOLLOWER) {
+            DIRRIP_LEADER_CTRS &c = dirrip_ctr[kind == DIRRIP_LEADER_SRRIP ? 0 : 1];
+            dirrip_sat_inc(c.acc_total);
+            if (instr) dirrip_sat_inc(c.acc_instr);
+            if (!hit) {
+                dirrip_sat_inc(c.miss_total);
+                if (instr) dirrip_sat_inc(c.miss_instr);
+            }
+        }
+        if (instr) { dirrip_stats.acc_instr[kind]++; if (!hit) dirrip_stats.miss_instr[kind]++; }
+        else       { dirrip_stats.acc_data[kind]++;  if (!hit) dirrip_stats.miss_data[kind]++; }
+
+        if (++dirrip_epoch_ctr >= DIRRIP_EPOCH_ACCESSES) {
+            dirrip_epoch_ctr = 0;
+            dirrip_decide();
+        }
+    }
+
+    if (hit) {
+        // promotion
+        if (type == WRITEBACK && !DIRRIP_PROMOTE_ON_WB_HIT)
+            return;
+
+#if PREFETCH_AWARE
+        if (type == PREFETCH) {
+            dirrip_stats.pf_hits++;
+            if (!DIRRIP_PF_HIT_PROMOTE)
+                return;                      
+        }
+        else if (block[set][way].prefetch && !block[set][way].translation && type != WRITEBACK) {
+            // first demand touch of a prefetched line (cache.cc clears the bit right after this call)
+            dirrip_sat_inc(dirrip_pf_used);
+            dirrip_stats.pf_first_use++;
+#if DIRRIP_PF_FIRST_USE_AS_INSERT
+            uint32_t ins = irrip ? (instr ? DIRRIP_INSERT_INSTR : DIRRIP_INSERT_DATA) : DIRRIP_SRRIP_INSERT;
+            if (dirrip_rrpv[set][way] > ins)
+                dirrip_rrpv[set][way] = ins;  
+            return;
+#endif
+        }
+#endif
+
+        if (irrip) {
+            if (instr)
+                dirrip_rrpv[set][way] = 0;
+            else
+                dirrip_rrpv[set][way] = (dirrip_rrpv[set][way] > DIRRIP_DATA_HIT_STEP) ? dirrip_rrpv[set][way] - DIRRIP_DATA_HIT_STEP : 0;
+        }
+        else
+            dirrip_rrpv[set][way] = 0;        
+        return;
+    }
+
+    // inserting
+#if PREFETCH_AWARE
+    // block[set][way] still holds the victim here 
+    if (block[set][way].valid && block[set][way].prefetch && !block[set][way].translation) {
+        dirrip_sat_inc(dirrip_pf_unused);
+        dirrip_stats.pf_evicted_unused++;
+    }
+
+    if (type == PREFETCH) {
+        bool l2_only = false;
+#if DIRRIP_PF_USE_FILL_LEVEL
+        uint32_t idx = MSHR.next_fill_index;
+        if (idx < MSHR.SIZE && (MSHR.entry[idx].full_addr >> LOG2_BLOCK_SIZE) == (full_addr >> LOG2_BLOCK_SIZE))
+            l2_only = (MSHR.entry[idx].fill_level >= FILL_L2);
+#endif
+        bool reuse_high = DIRRIP_PF_ADAPTIVE && dirrip_pf_reuse_high;
+
+        if (l2_only) {
+            dirrip_rrpv[set][way] = DIRRIP_PF_INSERT_NEAR;
+            dirrip_stats.pf_fill_near_l2only++;
+        }
+        else if (reuse_high) {
+            dirrip_rrpv[set][way] = DIRRIP_PF_INSERT_NEAR;
+            dirrip_stats.pf_fill_near_reuse++;
+        }
+        else {
+            dirrip_rrpv[set][way] = DIRRIP_PF_INSERT_FAR;
+            dirrip_stats.pf_fill_far++;
+        }
+        return;
+    }
+#endif
+
+    if (type == WRITEBACK)
+        dirrip_rrpv[set][way] = DIRRIP_INSERT_WRITEBACK;
+    else if (irrip)
+        dirrip_rrpv[set][way] = instr ? DIRRIP_INSERT_INSTR : DIRRIP_INSERT_DATA;
+    else
+        dirrip_rrpv[set][way] = DIRRIP_SRRIP_INSERT;
+}
+
+// used to print our own stats
+void CACHE::l2c_replacement_final_stats()
+{
+    const char *kind_name[3] = {"follower", "srrip_leader", "irrip_leader"};
+
+    cout << endl << "L2C Dynamic I-RRIP final stats (prefetch aware " << PREFETCH_AWARE << ")" << endl;
+    cout << "DIRRIP threshold: " << DIRRIP_THRESHOLD << " decision mode: " << DIRRIP_DECISION_MODE << " leader sets: " << DIRRIP_LEADER_SETS << "+" << DIRRIP_LEADER_SETS << " epoch: " << DIRRIP_EPOCH_ACCESSES << endl;
+    cout << "DIRRIP epochs: " << dirrip_stats.epochs << " epochs_irrip: " << dirrip_stats.epochs_irrip << " irrip_fraction: " << (dirrip_stats.epochs ? (double)dirrip_stats.epochs_irrip / dirrip_stats.epochs : 0.0) << " switches_to_irrip: " << dirrip_stats.switches_to_irrip << " switches_to_srrip: " << dirrip_stats.switches_to_srrip << " skipped: " << dirrip_stats.skipped_decisions << endl;
+    uint64_t decided = dirrip_stats.epochs - dirrip_stats.skipped_decisions;
+    cout << "DIRRIP last_ratio: " << dirrip_stats.last_ratio << " mean_ratio: " << (decided ? dirrip_stats.ratio_sum / decided : 0.0) << " last_cost_srrip: " << dirrip_stats.last_cost_srrip << " last_cost_irrip: " << dirrip_stats.last_cost_irrip << endl;
+    for (int k = 0; k < 3; k++)
+        cout << "DIRRIP " << kind_name[k] << " instr_acc: " << dirrip_stats.acc_instr[k] << " instr_miss: " << dirrip_stats.miss_instr[k] << " data_acc: " << dirrip_stats.acc_data[k] << " data_miss: " << dirrip_stats.miss_data[k] << endl;
+#if PREFETCH_AWARE
+    cout << "DIRRIP pf_fill far: " << dirrip_stats.pf_fill_far << " near_l2only: " << dirrip_stats.pf_fill_near_l2only
+         << " near_reuse: " << dirrip_stats.pf_fill_near_reuse << " pf_hits: " << dirrip_stats.pf_hits
+         << " first_use: " << dirrip_stats.pf_first_use << " evicted_unused: " << dirrip_stats.pf_evicted_unused
+         << " epochs_reuse_high: " << dirrip_stats.pf_epochs_reuse_high << endl;
+#endif
+
+    uint64_t lines = (uint64_t)L2C_SET * L2C_WAY;
+    uint64_t epoch_bits = 0;
+    while ((1ULL << epoch_bits) <= (uint64_t)DIRRIP_EPOCH_ACCESSES) epoch_bits++;
+    uint64_t ctr_bits = 2 * 4 * DIRRIP_CTR_BITS + epoch_bits + 1 /*policy bit*/;
+    uint64_t pf_bits  = PREFETCH_AWARE ? (lines /*prefetch bit*/ + 2 * DIRRIP_CTR_BITS + 1) : 0;
+    cout << "DIRRIP storage: RRPV " << lines * DIRRIP_RRPV_BITS << " bits, instruction bit " << lines << " bits, dueling counters " << ctr_bits << " bits, prefetch awareness " << pf_bits << " bits, TOTAL " << lines * DIRRIP_RRPV_BITS + lines + ctr_bits + pf_bits << " bits" << endl;
+}
