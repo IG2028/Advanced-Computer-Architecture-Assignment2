@@ -8,9 +8,8 @@
  *    B. Deliverable: storage overhead, bit by bit
  *    C. Deliverable: how the accuracy thresholds were chosen
  *    D. Deliverable: why each accuracy range gets the degree it gets
- *    E. Every tunable parameter: what it trades, whether it is worth tuning
- *    F. Results on the three traces and how they match the design
- *    G. Tuning experiments (scripts/tune.py) and why those values
+ *  Values chosen by the tuning runs (results/tuning/tuning.md) are marked
+ *  "TUNED" where they are defined.
  *
  * ----------------------------------------------------------------------------
  *  A. What it does
@@ -86,23 +85,29 @@
  *  take the MSHRs that demand misses need.
  *
  * ----------------------------------------------------------------------------
- *  B. Deliverable: storage overhead (default knobs; printed by final_stats)
+ *  B. Deliverable: storage overhead (tuned knobs; printed by final_stats)
  * ----------------------------------------------------------------------------
- *    Signature Table : 64 entries x 54 bits                          =  3,456
+ *    Signature Table : 256 entries x 56 bits                        = 14,336
  *        valid 1 + ip_tag 10 + last_addr 16 + last_stride 7
- *        + signature 10 + FSM state 2 + uniform conf 2 + LRU 6 = 54
+ *        + signature 10 + FSM state 2 + uniform conf 2 + LRU 8 = 56
  *    Pattern Table   : 2^10 = 1,024 entries x 9 bits                 =  9,216
  *        stride 7 + confidence 2 = 9
  *    Prefetch filter : 256 entries x 11 bits                         =  2,816
  *        valid 1 + partial tag 8 + useful 1 + class 1 = 11
  *    Throttle regs   : issued 16 + useful 16 + epoch ctr 11 + degree 3 =   46
  *    -------------------------------------------------------------------------
- *    TOTAL                                              15,534 bits = 1,942 B
+ *    TOTAL                                              26,414 bits = 3,302 B
  *
- *  For scale: ip_stride.l1d_pref tracks 24 IPs, each with a full 64-bit IP,
- *  a full 58-bit block address, a stride and LRU bits (~3.2 Kbit). SPP
- *  tracks 64 IPs in about the same ST budget (3.5 Kbit) and spends the
- *  rest, mostly the PT, on the non-uniform patterns ip_stride cannot predict. Choices that keep it small:
+ *  The ST was 64 entries (15,534 bits) before tuning. Going to 256 entries
+ *  costs 10.9 Kbit and is the only size increase that paid: it is the one
+ *  tuning change that beat the noise margin (geomean speedup 1.0079 ->
+ *  1.0130, coverage 8.7% -> 10.3%, accuracy 45.4% -> 51.5%), because with 64
+ *  entries 54% / 70% of the demand loads of Trace1 / Trace2 found no entry
+ *  for their IP, so those IPs were never trained. 256 is the largest size
+ *  the 8-bit LRU field allows. Every other structure kept its size because
+ *  growing or shrinking it changed speedup by less than 0.1% (PT 256 or
+ *  4,096 entries, filter 128 or 512 entries).
+ *  Choices that keep the entries small:
  *    - last_addr keeps only 16 low bits of the block address: a stride is
  *      computed mod 2^16, which is exact for every stride that can be
  *      prefetched (±63) and only wrong for jumps > 32K blocks, which are
@@ -111,41 +116,37 @@
  *      wrong first prediction, which the filter and throttling then absorb.
  *    - The filter uses an 8-bit partial tag. An alias can only make accuracy
  *      look slightly better than it is (1 in 256 chance per check).
- *    - The PT is 63% of the budget. SPP_SIG_BITS 8 would cut it to 2,304 bits
- *      (total 8.6 Kbit); experiment t1_sig measures what that costs.
  *
  * ----------------------------------------------------------------------------
  *  C. Deliverable: how the accuracy thresholds were chosen
  * ----------------------------------------------------------------------------
  *    0.75 / 0.50 / 0.25 / 0.10 split the accuracy axis into 5 bands.
  *    - The bands follow the cost model of a prefetch at the L1D. A useful
- *      prefetch saves one L1D miss (~ an L2 hit latency or more); a useless
- *      one costs an L1D line (it evicts something that may be reused), a PQ
- *      slot and L2 bandwidth. At accuracy a, each prefetch saves a units and
- *      wastes (1 - a). Below ~50% the waste is as large as the gain, so the
- *      degree must stop growing there; below ~25% three in four prefetches
- *      pollute, so the prefetcher should only keep its single best guess.
+ *      prefetch saves one L1D miss; a useless one costs an L1D line (it
+ *      evicts something that may be reused), a PQ slot and L2 bandwidth. At
+ *      accuracy a, each prefetch saves a units and wastes (1 - a). Below ~50%
+ *      the waste is as large as the gain, so the degree must stop growing
+ *      there; below ~25% three in four prefetches pollute, so the prefetcher
+ *      should only keep its single best guess.
  *    - 0.75 is the point where even the lookahead steps (which are less
  *      accurate than the first step, because their errors compound) are
  *      still right more often than not, so the deepest degree pays.
- *    - 0.10 is the "toxic" floor of feedback-directed prefetching
- *      (Srinath et al., HPCA 2007, use 0.40/0.75 as their two thresholds;
- *      the bands here are those split one step finer, plus a floor where
- *      the prefetcher goes to shadow mode).
+ *    - 0.10 is the "toxic" floor below which the prefetcher goes to shadow
+ *      mode. Feedback-directed prefetching (Srinath et al., HPCA 2007) uses
+ *      0.40 / 0.75; the bands here are those split one step finer.
  *    - The accuracy measured here is the FILTER accuracy: "the block we
  *      predicted was demanded while it was still in the 256-entry filter".
  *      It measures prediction quality, which is what the degree controls.
- *      ChampSim's accuracy (useful / issued at the L1D) is lower because it
- *      also loses late prefetches and prefetches evicted before use; it is
- *      the one reported in the result tables, as the spec defines it.
- *    - Measured on the traces (results/spp/*.txt): filter accuracy 69.8%,
- *      67.4%, 69.8% (ChampSim accuracy 55.7%, 38.9%, 41.6%). That lands in
- *      the 0.50-0.75 band, so the prefetcher spends most epochs at degree 3,
- *      with excursions to 4 (histogram d3=2575 d4=1103 on Trace1, d4 is the
- *      majority on Trace3 where uniform prefetches are 81% accurate).
- *      Degree 0 was never entered: the floor is a safety net that these
- *      traces do not need. Experiment t1_acc moves every boundary by 0.1 to
- *      check that the result is not sitting on a band edge.
+ *      ChampSim's accuracy (useful / issued at the L1D, the one in the result
+ *      tables, as the spec defines it) is lower because it also loses late
+ *      prefetches and prefetches evicted before use.
+ *    - Checked by experiment (scripts/tune.py t1_acc): moving every boundary
+ *      by about 0.1 in either direction ("loose" 0.65/0.40/0.20/0.05,
+ *      "strict" 0.85/0.65/0.35/0.15) changed geomean speedup by at most
+ *      0.02%, so the default was kept. That is expected: the measured filter
+ *      accuracy is 67-70% on all three traces, well inside the 0.50-0.75 band
+ *      and away from its edges, so a shift of 0.1 only moves the rare epochs
+ *      near a boundary.
  *
  * ----------------------------------------------------------------------------
  *  D. Deliverable: degree for each accuracy range
@@ -153,11 +154,9 @@
  *      accuracy        degree   reason
  *      >= 0.75           4      most predictions are right, including the
  *                               lookahead; 4 blocks ahead is enough lead time
- *                               to hide an L2 hit (~10-20 cycles) at the
- *                               access rates of these traces, and more would
- *                               mostly overrun the end of short streams and
- *                               the 4 KB page (page_cross_stops is already
- *                               18K on Trace1 at degree 3-4).
+ *                               to hide an L2 hit at the access rates of these
+ *                               traces, and more would mostly overrun the end
+ *                               of short streams and the 4 KB page.
  *      0.50 - 0.75       3      right more often than wrong: keep a useful
  *                               lookahead depth but one step shallower, since
  *                               each extra step is less accurate than the one
@@ -168,85 +167,19 @@
  *                               step, which has the highest confidence).
  *      < 0.10            0      shadow mode, see A.
  *    The initial degree is 2 (the middle of the table) because accuracy is
- *    unknown at the start; the first epoch decides.
- *    The degree is read straight from the table, not stepped up/down by one,
- *    so a phase change is followed in one epoch, and the halving of the two
- *    counters keeps one odd epoch from swinging it.
- *    Experiment t1_deg compares this table with "fixed 3" (no throttling),
- *    a more aggressive table (6/4/3/1/0) and a more conservative one
- *    (3/2/1/1/0).
- *
- * ----------------------------------------------------------------------------
- *  E. Tunable parameters (all #ifndef-guarded; see the knob block below)
- * ----------------------------------------------------------------------------
- *    Worth tuning (performance knobs, explored by scripts/tune.py):
- *      SPP_ST_ENTRIES, SPP_DEGREE_*, SPP_ACC_*, SPP_PT_CONF_THRESHOLD,
- *      SPP_PT_LOOKAHEAD_CONF, SPP_SIG_BITS / SPP_SIG_SHIFT,
- *      SPP_UCONF_THRESHOLD, SPP_UNIFORM_REENTRY, SPP_EPOCH_ACCESSES,
- *      SPP_FILTER_INDEX_BITS.
- *    Fixed by the design (changing them only changes storage or breaks an
- *    invariant, so they are not swept):
- *      SPP_STRIDE_BITS   7 = exactly the ±63-block reach of a 4 KB page.
- *      SPP_ADDR_BITS     16 is enough for every prefetchable stride.
- *      SPP_UCONF_BITS / SPP_PT_CONF_BITS  2-bit saturating counters; the
- *                        thresholds above are what matters.
- *      SPP_ACC_CTR_BITS  16 bits never saturate within one epoch (at most
- *                        4 x 1024 prefetches per epoch).
- *      SPP_MIN_EPOCH_ISSUED, SPP_INIT_DEGREE  only matter in the first
- *                        epochs or in phases with almost no prefetches.
- *      SPP_IP_TAG_BITS, SPP_FILTER_TAG_BITS  aliasing knobs; 10 and 8 bits
- *                        make aliasing rare at 64 IPs / 256 filter entries.
- *      SPP_L1_FILL_MSHR_LIMIT  kept equal to ip_stride, so the Task 1
- *                        comparison measures the prediction, not the fill
- *                        policy.
- *
- * ----------------------------------------------------------------------------
- *  F. Results (25M warmup + 25M simulated instructions, results/tables.md)
- * ----------------------------------------------------------------------------
- *                    speedup            coverage (%)       accuracy (%)
- *                ip_stride   spp     ip_stride   spp     ip_stride   spp
- *      Trace1     1.0048   1.0081      5.2     10.2       52.7     55.7
- *      Trace2     1.0004   1.0019      0.7      1.5       38.2     38.9
- *      Trace3     1.0021   1.0139      2.5     14.4       16.0     41.6
- *      geomean    1.0024   1.0079   (mean)2.8   8.7       35.6     45.4
- *    This is what the design predicts:
- *    - SPP covers 2-6x more misses than ip_stride with higher accuracy,
- *      because 72% of its prefetches (73,975 of 102,136 on Trace1) come from
- *      the PT, i.e. from non-uniform patterns ip_stride cannot predict.
- *    - Trace3 gains most: its uniform prefetches are 81% accurate and its
- *      non-uniform ones 67%, so the throttle runs at degree 4 most of the
- *      time, while ip_stride's fixed degree 3 on the same trace is only 16%
- *      accurate. (Inferred from the stats, not measured directly: ip_stride
- *      keeps prefetching a stride after it breaks, where SPP falls back to
- *      the PT.)
- *    - Trace2 gains least: 70% of its demand loads miss in the 64-entry ST
- *      (st_misses 3.06M of 4.36M), so most IPs never get a second access
- *      tracked and nothing can be predicted for them. This is a capacity
- *      problem, not a prediction problem, which is why ST size is the first
- *      tuning experiment.
- *    - Absolute speedups are small (≤1.4%) because these traces are
- *      front-end bound as much as data bound: L2 instruction MPKI (1-19) is
- *      as large as L1D load MPKI (3-14), and SPP only removes 9% of the L1D
- *      misses on average. Task 3 adds the L2 instruction side.
- *
- * ----------------------------------------------------------------------------
- *  G. Tuning experiments (scripts/tune.py, docs/tuning.md)
- * ----------------------------------------------------------------------------
- *    Tuned with LRU at L2 (the prefetcher only changes the L1D miss stream,
- *    so it can be tuned independently of the L2 policy), one knob group at a
- *    time around these defaults, in order of expected impact:
- *      t1_st     ST 32/128/256         (54-70% ST misses -> biggest lever)
- *      t1_deg    degree table          (deliverable D)
- *      t1_acc    thresholds ±0.1       (deliverable C)
- *      t1_pt     PT confidence 1/3, lookahead confidence 3
- *      t1_sig    signature 8 / 12 bits, shift 2
- *      t1_fsm    uniform confidence 2, re-entry 2
- *      t1_epoch  256 / 4096 accesses
- *      t1_filter 128 / 512 entries
- *    Each value is the next power of two (or the next step) on each side of
- *    the default; the response of these knobs is monotone or single-peaked,
- *    so one step each way shows which direction pays, and a second step is
- *    run only in the direction that won.
+ *    unknown at the start; the first epoch decides. The degree is read
+ *    straight from the table, not stepped up/down by one, so a phase change
+ *    is followed in one epoch, and the halving of the two counters keeps one
+ *    odd epoch from swinging it.
+ *    With the tuned 256-entry ST the throttle spends most epochs at degree 3
+ *    and the rest at 4 (Trace1: d3 2,666 / d4 1,090 of 4,229 epochs; Trace3,
+ *    the most regular trace, is at d4 half the time).
+ *    Checked by experiment (t1_deg): no throttling (degree 3 everywhere), a
+ *    more aggressive table (6/4/3/1/0) and a more conservative one
+ *    (3/2/1/1/0) all land within 0.01% of the default. The table trades
+ *    accuracy against coverage as intended (accuracy 42.6% aggressive, 45.4%
+ *    default, 48.0% conservative) at equal speedup, so the default, which is
+ *    in the middle, was kept.
  * ============================================================================
  */
 
@@ -257,12 +190,12 @@
 // ============================================================================
 
 // ---------- Signature Table (per-IP tracking) ----------
-// 64 entries: ~2.7x ip_stride's 24 trackers for about the same bits. The runs
-// show 54% (Trace1), 70% (Trace2) and 16% (Trace3) of demand loads miss in the
-// ST, so this is the knob most likely to raise coverage (experiment t1_st).
+// TUNED (t1_st): 256 entries, was 64. With 64, 54% / 70% / 16% of the demand
+// loads of Trace1/2/3 missed in the ST; 256 cuts that to 23% / 47% / 3% and
+// raises geomean speedup 1.0079 -> 1.0130 (32: 1.0052, 128: 1.0112).
 // 256 is the upper limit because the LRU field is 8 bits wide at most.
 #ifndef SPP_ST_ENTRIES
-#define SPP_ST_ENTRIES          64   // IPs tracked at once (fully associative, LRU). Must be <= 256.
+#define SPP_ST_ENTRIES          256  // IPs tracked at once (fully associative, LRU). Must be <= 256.
 #endif
 #ifndef SPP_IP_TAG_BITS
 #define SPP_IP_TAG_BITS         10   // hashed IP tag width; fewer bits = more IP aliasing
@@ -290,7 +223,8 @@
 // (+1,+2,+2,+2,+3) example needs, see A in the header) and a 1,024-entry PT.
 // PT confidence 2 of 3 for the first step: one occurrence is not a pattern, two
 // in a row with no contradiction is. Lookahead uses the same bar by default;
-// t1_pt raises it to 3 to see whether deeper steps are worth their errors.
+// Tuning kept these (t1_pt): confidence 1 raised coverage but cut accuracy to
+// 40.7% for +0.06%, confidence 3 lost 0.07%; both inside the noise margin.
 #ifndef SPP_SIG_BITS
 #define SPP_SIG_BITS            10   // signature width; PT has 2^SIG_BITS entries
 #endif
@@ -312,7 +246,8 @@
 // over 4.2K epochs), and with the halving the counters hold about twice that,
 // which is enough for a usable estimate (SPP_MIN_EPOCH_ISSUED = 16 guards the
 // quiet phases). It still gives ~4,000 decisions per 25M instructions, so
-// phase changes are followed quickly. t1_epoch tries 256 and 4,096.
+// phase changes are followed quickly. Tuning kept it (t1_epoch): 256 and 4,096
+// both changed speedup by less than 0.03%.
 // Thresholds and degrees: see C and D in the header for the reasoning.
 #ifndef SPP_EPOCH_ACCESSES
 #define SPP_EPOCH_ACCESSES      1024 // demand loads between two throttling decisions

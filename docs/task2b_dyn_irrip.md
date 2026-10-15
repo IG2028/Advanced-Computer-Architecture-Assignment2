@@ -48,9 +48,9 @@ Storage at defaults: RRPV 16,384 + instruction bit 8,192 + counters 8×16 + epoc
 
 | Knob | Default | Range | Trade-off | Class |
 |---|---|---|---|---|
-| `DIRRIP_THRESHOLD` | 0.25 | 0–1 | Ratio threshold; this is the knob for the 5-point study | **Tune** |
-| `DIRRIP_DECISION_MODE` | 2 | 0 / 1 / 2 | Ratio / duel / both | **Tune** |
-| `DIRRIP_LEADER_SETS` | 32 | 8–128 (power of 2, ≤ sets/2) | Sampling accuracy vs. sets stuck on the wrong policy | **Tune** |
+| `DIRRIP_THRESHOLD` | 0.40 (tuned; was 0.25) | 0–1 | Ratio threshold; this is the knob for the 5-point study | **Tune** |
+| `DIRRIP_DECISION_MODE` | 0 (tuned; was 2) | 0 / 1 / 2 | Ratio / duel / both | **Tune** |
+| `DIRRIP_LEADER_SETS` | 16 (tuned; was 32) | 8–128 (power of 2, ≤ sets/2) | Sampling accuracy vs. sets stuck on the wrong policy | **Tune** |
 | `DIRRIP_EPOCH_ACCESSES` | 16384 | 4K–128K | Reaction speed vs. noise | Tune |
 | `DIRRIP_HYSTERESIS` | 0.05 | 0–0.2 | Stability vs. reaction near the threshold | Tune |
 | `DIRRIP_RATIO_MISS_WEIGHT` | 1.0 | 1–4 | 1 = spec formula; higher weights misses over accesses | Tune |

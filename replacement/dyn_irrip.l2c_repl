@@ -13,12 +13,12 @@
  *  Contents of this comment
  *    2B-1  The mechanism
  *    2B-2  Deliverable: number of leader sets and how they are placed
- *    2B-3  Deliverable: decision logic, and why the guard was added
- *    2B-4  Deliverable: threshold sensitivity (5 thresholds) and what it shows
- *    2B-5  Other parameters, storage, results, tuning experiments
+ *    2B-3  Deliverable: decision logic
+ *    2B-4  Deliverable: threshold sensitivity (5 thresholds)
  *    3-1   The problem SPP creates at the L2
  *    3-2   Deliverable: how prefetch packets are handled, and why
- *    3-3   Storage, results, tuning experiments
+ *  Values chosen by the tuning runs (results/tuning/tuning.md) are marked
+ *  "TUNED" where they are defined.
  *
  * ============================================================== Task 2B ======
  *  2B-1  Mechanism
@@ -48,116 +48,108 @@
  * ----------------------------------------------------------------------------
  *  2B-2  Deliverable: leader sets
  * ----------------------------------------------------------------------------
- *    32 SRRIP leaders + 32 I-RRIP leaders out of 1,024 sets (6.25%).
+ *    16 SRRIP leaders + 16 I-RRIP leaders out of 1,024 sets (3.1%).
+ *    (TUNED, was 32 + 32.)
  *    - Placement (complement-select, as in DIP, Qureshi et al. ISCA 2007):
- *      the 1,024 sets form 32 regions of 32 consecutive sets; in region r the
- *      set at offset r is an SRRIP leader and the set at offset 31-r is an
+ *      the 1,024 sets form 16 regions of 64 consecutive sets; in region r the
+ *      set at offset r is an SRRIP leader and the set at offset 63-r is an
  *      I-RRIP leader. Every region has one of each, so both samples cover the
  *      whole index space (code and data addresses map all over it), and the
- *      two never collide (r = 31-r has no integer solution). The kind of a set
+ *      two never collide (r = 63-r has no integer solution). The kind of a set
  *      is a function of its index bits, so it costs no storage.
- *    - Why 32 per policy: it is the number DIP and DRRIP use for caches of
- *      this size, and the arithmetic agrees. A 16K-access epoch puts ~512
- *      demand accesses in each leader group; at a miss rate p ~ 0.5 the
- *      standard error of the measured rate is sqrt(p(1-p)/512) ~ 2.2 points,
- *      i.e. ~4% relative — small next to the 10-25% differences the duel has
- *      to detect (I-RRIP leaders: 31% instruction miss rate vs 34% for SRRIP
- *      leaders on Trace2; data 66% vs 58%). With 16 leaders the error grows to
- *      ~6% and the guard's 2% margin would be noise-dominated; with 64 the
- *      estimate is better but 12.5% of the cache is pinned to a policy that
- *      is wrong half the time. t2b_leaders measures 16 and 64.
+ *    - Why 16 per policy. Leaders cost performance: they are pinned to one
+ *      policy, and in any phase half of them run the losing one. They buy
+ *      decision accuracy, but the decision only needs the instruction share
+ *      R measured on the SRRIP leaders (2B-3), and R is far from the
+ *      threshold on two of the three traces (0.27 and 0.60 vs 0.40). With 16
+ *      leaders, a 16K-access epoch puts ~256 demand accesses in the SRRIP
+ *      group, and halving the counters keeps about two epochs, so R is
+ *      estimated from ~500 samples: a standard error of about
+ *      sqrt(0.25/500) = 0.02, well below those distances. Only Trace1
+ *      (R ~ 0.43-0.45) sits close enough to flip, and Trace1 is the trace
+ *      where SRRIP and I-RRIP perform within 0.1% of each other, so a noisy
+ *      choice there costs nothing.
+ *    - Tuning (t2b_leaders, with the original decision logic): 16 leaders
+ *      1.0076, 32 leaders 1.0062, 64 leaders 1.0066 geomean speedup. With the
+ *      tuned ratio-only decision, 16 and 32 leaders give the same 1.0077, so
+ *      16 is kept for pinning half as many sets at equal decision quality.
+ *    - The I-RRIP leaders are not used by the tuned decision (ratio only).
+ *      They stay because modes 1 and 2 need them and the stats print both
+ *      policies' miss rates from them; they run I-RRIP, which is the policy
+ *      the followers use most of the time anyway.
  *
  * ----------------------------------------------------------------------------
  *  2B-3  Deliverable: decision logic
  * ----------------------------------------------------------------------------
- *    ratio (the spec's hint, measured on the SRRIP leaders):
- *        R = (A_instr + w*M_instr) / (A_total + w*M_total)
- *        w = 1 is the spec formula: instruction accesses and misses as a
- *        share of all of them. Measured on SRRIP leaders because that is the
- *        "unprotected" behaviour: it says how much instruction pressure there
- *        is before I-RRIP hides some of it.
- *        I-RRIP wanted if R > threshold, with a relative hysteresis band
- *        (enter above T*1.05, leave below T*0.95) so the selector does not
- *        flip every epoch when R sits on the threshold.
+ *    ratio (the spec's formula, measured on the SRRIP leaders):
+ *        R = (A_instr + M_instr) / (A_total + M_total)
+ *        (DIRRIP_RATIO_MISS_WEIGHT w = 1 reproduces the spec formula; the
+ *        misses count twice in effect, because a miss is also an access, so
+ *        R grows faster when instruction lines are being lost.)
+ *        Measured on the SRRIP leaders because that is the unprotected
+ *        behaviour: it says how much instruction pressure there is before
+ *        I-RRIP hides some of it. On the I-RRIP leaders R would drop as soon
+ *        as I-RRIP works, and the selector would oscillate.
+ *        Followers run I-RRIP if R > T, with a relative hysteresis band:
+ *        switch to I-RRIP above T*1.05, back to SRRIP below T*0.95, so the
+ *        selector does not flip every epoch when R sits on T.
+ *        T = 0.40 (TUNED, was 0.25; see 2B-4).
  *
- *    duel guard (measured on both leader kinds):
- *        cost = c*M_instr + M_data,  c = DIRRIP_INSTR_MISS_COST = 2
- *        I-RRIP allowed if cost(I-RRIP leaders) <= cost(SRRIP leaders)*1.02
- *        c = 2 because an instruction miss stalls fetch while a data miss is
- *        partly overlapped by the out-of-order window; the 2% margin absorbs
- *        sampling noise in favour of the policy the ratio asked for.
- *
- *    DIRRIP_DECISION_MODE 0: ratio only (exactly the spec hint)
+ *    DIRRIP_DECISION_MODE 0: ratio only (the spec's rule)   <- TUNED, was 2
  *                         1: duel guard only (classic set dueling)
- *                         2: ratio AND duel guard (default)
- *
- *    Why mode 2: the ratio alone says "instruction pressure is high", not
- *    "I-RRIP is helping". A phase can have a high instruction share and
- *    still lose with I-RRIP (instruction lines with no reuse are protected
- *    while reused data are evicted). The guard checks the actual outcome on
- *    the leaders. The ratio keeps the spec's threshold meaningful and stops
- *    the duel from choosing I-RRIP when there is almost no instruction
- *    traffic to protect.
- *
- * ----------------------------------------------------------------------------
- *  2B-4  Deliverable: threshold sensitivity
- * ----------------------------------------------------------------------------
- *    Five thresholds were run with the default mode 2 (scripts/run_sweep.sh,
- *    results/dynT_*):
- *                 T = 0.05    0.10    0.15    0.25    0.40
- *      speedup      1.0062  1.0061  1.0064  1.0062  1.0059   (geomean)
- *      I-RRIP frac  0.58    0.53    0.45    0.35    0.29     (mean)
- *      Trace3 frac  1.00    0.85    0.69    0.38    0.31
- *      Trace3 instr MPKI 0.961 0.979 0.982 1.043 1.057
- *    The threshold works exactly as designed: raising it monotonically lowers
- *    the share of epochs in I-RRIP, which raises instruction MPKI and lowers
- *    data MPKI. Speedup is almost flat because:
- *      - The measured ratio is 0.43 (Trace1), 0.60 (Trace2) and 0.27 (Trace3)
- *        on average. Every threshold below ~0.4 is below the ratio of Trace1
- *        and Trace2, so for those traces the ratio test always passes and the
- *        duel guard alone decides (dynT_0.05 and dynT_0.10 are identical on
- *        both). Only Trace3, whose ratio sits inside the swept range, reacts,
- *        and Trace3 has ~1 instruction MPKI, so its reaction cannot move IPC.
- *      - So the swept range (from the spec's examples) is too low for these
- *        traces. scripts/tune.py t2b_thr re-centres it on the measured ratios
- *        (0.30-0.70), where the threshold crosses each trace's ratio, and
- *        t2b_thr_ratio repeats it with the ratio alone (mode 0) to isolate
- *        the threshold from the guard.
+ *                         2: ratio AND duel guard
+ *    The duel guard compares cost = c*M_instr + M_data on both leader groups
+ *    and allows I-RRIP only if its leaders are no more than 2% costlier.
+ *    It was the original default and tuning removed it:
+ *      mode 2 (ratio AND guard, T 0.25)   1.0062
+ *      mode 1 (guard only)                1.0063
+ *      mode 0 (ratio only,  T 0.25)       1.0075
+ *      mode 0 (ratio only,  T 0.40)       1.0077   <- chosen
+ *    Why the guard hurt: it counts misses, and I-RRIP always shows more data
+ *    misses than it saves instruction misses (on Trace2, over the whole run,
+ *    I-RRIP leaders had 350 fewer instruction misses and 2,655 more data
+ *    misses than SRRIP leaders), so it vetoed I-RRIP in 69% of Trace2's
+ *    epochs although static I-RRIP is 2.4% faster there. Raising the
+ *    instruction-miss weight c to 4 or 8 helped only marginally (1.0065):
+ *    miss counts do not capture that an instruction miss stalls the whole
+ *    front end. The instruction share R is the better signal here: when it
+ *    is high, protecting instructions pays even if the miss count goes up
+ *    (the Task 2A results show the same thing).
  *
  * ----------------------------------------------------------------------------
- *  2B-5  Other parameters, storage, results, experiments
+ *  2B-4  Deliverable: sensitivity to the threshold (5 values)
  * ----------------------------------------------------------------------------
- *    Epoch = 16,384 L2 demand accesses (97 epochs on Trace2, ~260K
- *    instructions each): long enough for ~512 samples per leader group
- *    (see 2B-2), short enough to follow phases. MIN_SAMPLES = 64 skips a
- *    decision when the SRRIP leaders saw too little traffic (never happened
- *    on these traces). Followers start in SRRIP (INIT_IRRIP 0): the safe
- *    policy until the first evidence. Counters are 16 bits, halved every
- *    epoch, so they never reach saturation (at most ~2 x 512 per epoch).
- *    Fixed knobs (DIRRIP_INSERT_*, DATA_HIT_STEP, EVICT_PREFER_DATA) are the
- *    Task 2A policy and are tuned there, not here.
+ *    Ratio-only decision (the tuned logic), results of t2b_thr_ratio (run
+ *    with 32 leaders; with the tuned 16 the T = 0.40 point is the same
+ *    1.0077). scripts/run_sweep.sh now runs these five values:
+ *                         T = 0.30     0.40     0.50     0.60     0.70
+ *      geomean speedup      1.0075   1.0077   1.0076   1.0068   1.0040
+ *      L2 instr MPKI        7.78     7.82     7.98     8.19     8.93
+ *      L2 data MPKI         6.61     6.54     6.39     6.31     6.00
+ *      I-RRIP epochs  Tr1   1.00     0.75     0.00     0.00     0.00
+ *                     Tr2   0.94     0.93     0.91     0.73     0.00
+ *                     Tr3   0.38     0.31     0.31     0.00     0.00
+ *    Each trace leaves I-RRIP when T passes its own mean ratio (Trace3 0.27,
+ *    Trace1 0.43-0.45, Trace2 0.60), which is the behaviour the rule is
+ *    designed to have, and instruction MPKI rises / data MPKI falls
+ *    monotonically with T. Performance has a broad plateau at 0.30-0.50 and
+ *    falls off once Trace2, the trace that gains most from I-RRIP, is
+ *    switched to SRRIP (0.60: partly, 0.70: entirely, -0.37%). 0.40 is the
+ *    peak and sits in the middle of the plateau, so it is the most robust
+ *    choice: it keeps Trace2 in I-RRIP and lets Trace1, which does slightly
+ *    better with SRRIP, leave it a quarter of the time.
+ *    Earlier sweep with the guard (mode 2, T = 0.05 ... 0.40, results/dynT_*)
+ *    was flat (1.0059-1.0064) because the thresholds were all below the
+ *    ratios of Trace1 and Trace2, so the guard alone decided; that is why
+ *    the final sweep is centred on the measured ratios.
  *
- *    Storage (L2 = 1,024 sets x 8 ways = 8,192 lines):
- *      RRPV 8,192 x 2 = 16,384 bits; instruction bit 8,192 bits;
- *      leader counters 2 kinds x 4 x 16 = 128 bits; epoch counter 15 bits;
- *      policy selector 1 bit                       TOTAL 24,720 bits (3.02 KB)
- *      i.e. 144 bits more than static I-RRIP.
- *
- *    Results (geomean speedup over LRU): SRRIP 1.0004, static I-RRIP 1.0081,
- *    dynamic I-RRIP 1.0062. Dynamic sits between the two static policies, as
- *    set dueling should, and is below static I-RRIP because I-RRIP is the
- *    better policy in almost every phase of these traces, so every epoch the
- *    followers spend in SRRIP is a small loss (69% of epochs on Trace2). The
- *    cause is the guard: over the whole Trace2 run, the I-RRIP leaders had
- *    3% fewer instruction misses and 27% more data misses than the SRRIP
- *    leaders, so with c = 2 the guard usually prefers SRRIP, although IPC
- *    says the instruction misses matter more. In other words c = 2
- *    under-weights instruction misses on these traces; the break-even is
- *    c ~ 7.6 (t2b_cost tries 1, 4, 8; t2b_mode tries the ratio alone).
- *
- *    Tuning experiments (no prefetcher): t2b_thr, t2b_thr_ratio (5 points
- *    each), t2b_mode, t2b_leaders (16 / 64), t2b_epoch (4K / 64K),
- *    t2b_cost (1 / 4 / 8), t2b_hyst (0; 0.15 with a 5% guard margin).
+ *    Dynamic vs static: tuned dynamic I-RRIP (1.0077) is above SRRIP (1.0004)
+ *    and close to the old static I-RRIP (1.0081), as set dueling should be
+ *    when one policy is best in most phases. Its I-RRIP half uses the Task 2A
+ *    rules as they were when Task 2B was tuned (data inserted at 2, eviction
+ *    tie-break only, DIRRIP_INSERT_DATA / DIRRIP_EVICT_PREFER_DATA below);
+ *    the later Task 2A tuning (data at 3, eviction mode 2) was not tried
+ *    inside the duel.
  *
  * =============================================================== Task 3 ======
  *  3-1  The problem
@@ -217,47 +209,16 @@
  *  says nothing about whether a data prefetch will be reused, and SPP already
  *  measures its own accuracy at the L1D).
  *
- * ----------------------------------------------------------------------------
- *  3-3  Storage, results, experiments
- * ----------------------------------------------------------------------------
- *    Extra storage over Task 2B: prefetch bit 8,192 (already in BLOCK for
- *    ChampSim's statistics) + used / unused counters 2 x 16 + reuse flag 1
- *    = 8,225 bits; TOTAL 32,945 bits (4.02 KB).
- *
- *    Results (geomean speedup over LRU, no prefetch):
- *      SPP alone (LRU L2) 1.0079, dynamic I-RRIP alone 1.0062,
- *      SPP + dynamic I-RRIP 1.0146, SPP + prefetch-aware dynamic I-RRIP
- *      1.0150 — Task 3 beats both parts on every trace (Trace1 1.0091 vs
- *      1.0081 / 1.0009, Trace2 1.0216 vs 1.0019 / 1.0177, Trace3 1.0144 vs
- *      1.0139 / 1.0001).
- *    Why this is the expected outcome:
- *      - The two parts act on different misses: SPP removes L1D data misses
- *        (coverage 8.7%), dynamic I-RRIP removes L2 instruction misses
- *        (-18%). Their gains are nearly additive (0.79% + 0.62% = 1.41% vs
- *        1.46% measured for the plain pair).
- *      - Prefetch awareness adds a little more (+0.04%), all of it on the
- *        L2 side: L2 instruction MPKI 8.29 -> 8.19, total 13.98 -> 13.88,
- *        while L1D coverage and accuracy are unchanged. The gain is small
- *        because the pollution was small: SPP issues 46K-102K prefetches per
- *        25M instructions, a few percent of L2 fills.
- *      - The L2 copies really are dead: on Trace1, 47,322 prefetch fills went
- *        in at RRPV 3, 47,196 prefetched lines were evicted unused and only
- *        1,694 got a demand hit (L2 prefetch reuse 3.5%; 3.1% and 1.8% on
- *        Trace2 / Trace3). That confirms distant insertion, and also means
- *        the 0.5 reuse threshold never fired (epochs_reuse_high = 0): the
- *        adaptive rule is a safety net these traces do not need.
- *
- *    Tuning experiments (SPP and dynamic I-RRIP at their defaults):
- *      t3_insert  far = 2 (no distant insertion); everything far
- *      t3_ablate  one mechanism off at a time (first-use-as-insert,
- *                 evict-dead-prefetch-first; prefetch-hit promotion on)
- *      t3_reuse   threshold 0.03 / 0.08 (only values near the measured
- *                 2-4% reuse can change anything)
- *      t3_spp     a more aggressive SPP degree table, now that the L2 can
- *                 absorb useless prefetches at maxRRPV
- *
- *  Every knob is #ifndef-guarded so a sweep can override it from a wrapper
- *  file (scripts/make_variant.sh, scripts/run_sweep.sh, scripts/tune.py).
+ *  Tuning (t3_insert, t3_ablate, t3_reuse; all with SPP and dynamic I-RRIP
+ *  fixed): turning any single mechanism off, inserting prefetches at 2,
+ *  inserting every prefetch far, or lowering the reuse threshold to 0.03 or
+ *  0.08 each cost 0.01-0.04% (geomean 1.0146-1.0150 vs 1.0150), so all
+ *  defaults were kept. Each mechanism points the right way, and the effect
+ *  is small because prefetch fills are a small share of L2 fills (SPP
+ *  issues 46K-102K prefetches per 25M instructions) and 96-98% of the
+ *  prefetched L2 lines are never demanded, which is also why the 0.5 reuse
+ *  threshold never fires. Task 3 inherits the tuned SPP (256-entry ST) and
+ *  the tuned Task 2B decision; the final runs measure that combination.
  * ============================================================================
  */
 
@@ -306,14 +267,17 @@
 #endif
 
 // ---------- Set dueling ----------
+// TUNED (t2b_leaders): 16 per policy, was 32 (see 2B-2)
 #ifndef DIRRIP_LEADER_SETS
-#define DIRRIP_LEADER_SETS          32     // leader sets PER POLICY (32 SRRIP + 32 I-RRIP of 1024 = 6.25 %)
+#define DIRRIP_LEADER_SETS          16     // leader sets PER POLICY (16 SRRIP + 16 I-RRIP of 1024 = 3.1 %)
 #endif
+// TUNED (t2b_mode): ratio only, was 2 = ratio AND duel guard (1.0062 -> 1.0075, see 2B-3)
 #ifndef DIRRIP_DECISION_MODE
-#define DIRRIP_DECISION_MODE        2      // 0 ratio only, 1 duel only, 2 ratio AND duel
+#define DIRRIP_DECISION_MODE        0      // 0 ratio only, 1 duel only, 2 ratio AND duel
 #endif
+// TUNED (t2b_thr_ratio): 0.40, was 0.25 (peak of the 5-point study, see 2B-4)
 #ifndef DIRRIP_THRESHOLD
-#define DIRRIP_THRESHOLD            0.25   // ratio threshold (the parameter of the 5-point sensitivity study)
+#define DIRRIP_THRESHOLD            0.40   // ratio threshold (the parameter of the 5-point sensitivity study)
 #endif
 #ifndef DIRRIP_RATIO_MISS_WEIGHT
 #define DIRRIP_RATIO_MISS_WEIGHT    1.0    // w in R; 1.0 reproduces the spec formula
@@ -322,10 +286,10 @@
 #define DIRRIP_HYSTERESIS           0.05   // relative band: enter I-RRIP above T*(1+h), leave below T*(1-h)
 #endif
 #ifndef DIRRIP_INSTR_MISS_COST
-#define DIRRIP_INSTR_MISS_COST      2.0    // c in the duel cost: an L2 instruction miss stalls fetch, a data miss is partly hidden by OoO
+#define DIRRIP_INSTR_MISS_COST      2.0    // (modes 1 and 2 only) c in the duel cost: an L2 instruction miss stalls fetch, a data miss is partly hidden by OoO
 #endif
 #ifndef DIRRIP_GUARD_MARGIN
-#define DIRRIP_GUARD_MARGIN         0.02   // I-RRIP may cost up to 2 % more than SRRIP in the duel and still be allowed
+#define DIRRIP_GUARD_MARGIN         0.02   // (modes 1 and 2 only) I-RRIP may cost up to 2 % more than SRRIP in the duel and still be allowed
 #endif
 #ifndef DIRRIP_EPOCH_ACCESSES
 #define DIRRIP_EPOCH_ACCESSES       16384  // L2 demand accesses (all sets) between decisions

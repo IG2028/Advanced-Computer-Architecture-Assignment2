@@ -3,132 +3,110 @@
  *  Task 2A : Instruction-conscious RRIP (I-RRIP) for the L2C
  * ============================================================================
  *
- *  Contents of this comment
- *    A. The policy, and the reasoning behind each of its three parts
- *       (insertion, promotion, eviction) — the Task 2A deliverable
- *    B. The isInstruction plumbing
- *    C. Storage
- *    D. Tunable parameters and which are worth tuning
- *    E. Results on the three traces and how they match the design
- *    F. Tuning experiments (scripts/tune.py)
+ *  Deliverable: the rationale behind modifying insertion, promotion and
+ *  eviction, and why this combination is the best one we found. Values
+ *  chosen by the tuning runs (results/tuning/tuning.md, experiments
+ *  t2a_insert, t2a_promo, t2a_evict) are marked "TUNED" where they are
+ *  defined.
  *
- * ----------------------------------------------------------------------------
- *  A. Policy
- * ----------------------------------------------------------------------------
  *  Base: SRRIP from rrip.l2c_repl (2-bit RRPV, insert at maxRRPV-1 = 2,
  *  hit -> 0, evict a line at maxRRPV = 3 after ageing the set).
  *
- *  Why instructions deserve priority at the L2: an instruction miss stalls
- *  the front end, so nothing behind it can even be fetched, while a data miss
- *  is partly hidden by the out-of-order window (other independent loads and
- *  work proceed under it). The instruction footprint of these traces is far
- *  larger than the 32 KB L1I (L2 instruction MPKI 1-19 under LRU), so the L2
- *  is the level that serves it. I-RRIP therefore trades some data hits for
- *  instruction hits.
+ *  Why instructions deserve priority at the L2
+ *  -------------------------------------------
+ *  An instruction miss stalls the front end: nothing behind it can even be
+ *  fetched. A data miss is partly hidden by the out-of-order window, since
+ *  independent loads and other work proceed under it. The instruction
+ *  footprint of these traces is far larger than the 32 KB L1I (L2
+ *  instruction MPKI up to 19 under LRU), so the L2 is the level that serves
+ *  it. I-RRIP therefore deliberately trades data hits for instruction hits,
+ *  and the tuning results below show the trade pays even when the TOTAL
+ *  number of L2 misses goes up.
  *
- *  I-RRIP changes all three parts of the policy so that instruction lines
- *  outlive data lines:
+ *  Insertion  (MODIFIED)
+ *  ---------------------
+ *    instruction fill -> RRPV 1          data fill -> RRPV 3 (maxRRPV)
+ *    writeback fill   -> RRPV 2
+ *    - Data at maxRRPV (TUNED, was 2): a data line enters as the next
+ *      eviction candidate of its set and survives only if it is re-referenced
+ *      before the set needs a victim. Most L2 data lines are streaming or
+ *      already filtered by the L1D, so they have no second use at L2; this is
+ *      the bimodal/distant insertion idea of BRRIP and DIP applied to data
+ *      only. Measured alone (t2a_insert): instruction MPKI 7.67 -> 6.74, data
+ *      MPKI 6.62 -> 7.43, speedup 1.0081 -> 1.0100.
+ *    - Instructions at 1, not 0: an instruction line at 0 would need three
+ *      full ageing rounds to become evictable even if it is never used again
+ *      (straight-line code that runs once), which turns priority into
+ *      pinning. At 1 it outlives the data inserted with it by two ageing
+ *      rounds, enough for loop bodies and hot functions to be re-referenced
+ *      and promoted. Tested: inserting at 0 was worse (1.0075 vs 1.0081).
+ *    - Writebacks stay at 2: a dirty line written back from L1D may be
+ *      re-read, but it is not a demand, so it gets the neutral SRRIP value.
  *
- *    Insertion : instruction fills get RRPV 1 (IRRIP_INSERT_INSTR); data
- *                fills keep the SRRIP value 2 (IRRIP_INSERT_DATA).
- *                Why 1 and not 0: an instruction line inserted at 0 would
- *                need three full ageing rounds to become evictable even if it
- *                is never used again (straight-line code that runs once),
- *                which turns a priority into pinning. At 1 it survives one
- *                more ageing round than a data line, which is enough for loop
- *                bodies and hot functions to be re-referenced and promoted.
- *                Why data stays at 2: data are not pushed further than SRRIP
- *                would push them, so a data line is never worse off than under
- *                SRRIP at the moment it enters; the bias comes only from
- *                moving instructions closer. (t2a_insert tests both
- *                alternatives: instructions at 0, data at 3.)
- *                Writeback fills also stay at 2: a dirty line written back
- *                from L1D may be re-read, but it is not a demand.
+ *  Promotion  (MODIFIED)
+ *  ---------------------
+ *    instruction hit -> RRPV 0           data hit -> RRPV - 1
+ *    writeback hit   -> no change
+ *    - An instruction hit is proof of reuse of the expensive kind, so it gets
+ *      full protection at once (hit priority).
+ *    - A data line climbs one step per hit (frequency priority). Inserted at
+ *      3, it needs one hit to reach the neutral value 2 and three to reach 0,
+ *      so only data that is actually reused repeatedly competes with
+ *      instruction lines; hot data still gets there, so it is not starved.
+ *      Tested: SRRIP-style "data hit -> 0" (1.0075) and a 2-step jump
+ *      (1.0074) both lost to one step (1.0081), because they let data lines
+ *      that are touched once more and then die sit above instruction lines.
+ *    - Writeback hits do not promote: a writeback means the L1D is evicting
+ *      the line, which is evidence it is NOT being used right now (SRRIP in
+ *      rrip.l2c_repl promoted on it).
  *
- *    Promotion : an instruction hit goes to RRPV 0; a data hit moves one step
- *                closer (RRPV - 1) instead of jumping to 0. A data line thus
- *                needs two hits to reach the protection one instruction hit
- *                buys — frequency-based promotion for data, hit-priority for
- *                instructions. Data lines that are really hot still get to 0,
- *                so this does not starve hot data; it stops a data line that
- *                is touched once more and then dies from sitting at 0 above
- *                instruction lines. Writeback hits do not promote at all: a
- *                writeback is the L1D evicting the line, which is evidence it
- *                is NOT being used right now (SRRIP in rrip.l2c_repl promoted
- *                on it). (t2a_promo tests "data hit -> 0" and a 2-step jump.)
+ *  Eviction  (MODIFIED)
+ *  --------------------
+ *    The set is aged exactly like SRRIP until some line reaches RRPV 3. Then
+ *    the victim is, in order of preference:
+ *      1. a data line at RRPV 3
+ *      2. a data line at RRPV 2, if only instruction lines are at 3
+ *      3. the first line at RRPV 3 (an instruction line)
+ *    (IRRIP_EVICT_MODE 2, TUNED, was 1 = rules 1 and 3 only.)
+ *    - Rule 1 is a pure tie-break: it never evicts a line SRRIP would
+ *      consider younger, it only uses the instruction bit to choose among
+ *      equally old lines.
+ *    - Rule 2 goes further and spares an instruction line at 3 when a data
+ *      line one step younger exists. It overrides the RRPV order by one
+ *      step, so an instruction line that really is dead still goes once no
+ *      data line is at 2 or 3; it cannot be pinned. Measured alone
+ *      (t2a_evict): instruction MPKI 7.67 -> 6.32, speedup 1.0081 -> 1.0133,
+ *      the largest single gain of the Task 2A experiments. Without any
+ *      tie-break (plain SRRIP victim choice) speedup falls to 1.0062.
  *
- *    Eviction  : the set is aged exactly like SRRIP until a line reaches
- *                RRPV 3, but when several lines are at 3, a data line is
- *                evicted before an instruction line (IRRIP_EVICT_MODE 1).
- *                Plain SRRIP takes the first line at 3, whatever it holds.
- *                This is the cheapest way to use the per-line instruction bit
- *                at eviction: it never evicts a line that SRRIP would
- *                consider younger, it only breaks ties. On Trace2 it changed
- *                the victim 147,612 times. Mode 2 (also prefer a data line at
- *                2 over an instruction line at 3) is stronger and is left as
- *                an experiment (t2a_evict), because it overrides the RRPV
- *                order and can keep dead instruction lines alive.
+ *  Why this combination is the best one we found
+ *  ---------------------------------------------
+ *  Every change toward SRRIP behaviour lost (data hit -> 0, 2-step promotion,
+ *  no tie-break, instructions at 0), and both changes toward stronger
+ *  instruction priority won. Together (task2a_final run) they give:
+ *                      speedup   L2 instr MPKI   L2 data MPKI   L2 MPKI
+ *      SRRIP           1.0004        9.85            5.96        15.81
+ *      I-RRIP (old)    1.0081        7.67            6.62        14.29
+ *      I-RRIP (tuned)  1.0135        6.20            8.15        14.35
+ *  The tuned policy has slightly MORE total L2 misses than the untuned one
+ *  and is still 0.5% faster, because it replaces 1.5 instruction MPKI with
+ *  1.5 data MPKI and an instruction miss costs more cycles than a data miss.
+ *  Per trace: Trace2 (largest instruction footprint) +3.7%, Trace3 +0.7%,
+ *  Trace1 -0.3% (its data misses are the expensive ones; this is exactly
+ *  the case Task 2B's dynamic policy is for).
  *
- *  Invalid ways are always used first, as in every ChampSim policy.
- *  Ageing is done in one step (add maxRRPV - oldest to every line), which is
- *  equivalent to SRRIP's "increment all and rescan" loop.
- *
- * ----------------------------------------------------------------------------
- *  B. isInstruction
- * ----------------------------------------------------------------------------
+ *  isInstruction
+ *  -------------
  *  update_replacement_state got a new argument, isInstruction, in every cache
  *  and every policy (inc/cache.h, src/cache.cc, replacement/*). cache.cc
- *  passes the packet's `instruction` flag at every call site (fills, hits,
- *  writebacks, prefetches); the BTB passes 0. A line counts as an instruction
- *  line only for LOAD / PREFETCH packets, which is the same rule
- *  fill_cache() uses to set block.instruction and the rule main.cc uses for
- *  "L2C INSTRUCTION LOAD MPKI" (address-translation packets therefore count
- *  as data). At eviction the policy reads block.instruction of each way.
+ *  passes the packet's `instruction` flag at every call site; the BTB passes
+ *  0. A line counts as an instruction line only for LOAD / PREFETCH packets,
+ *  the same rule fill_cache() uses to set block.instruction and main.cc uses
+ *  for "L2C INSTRUCTION LOAD MPKI" (address-translation packets count as
+ *  data). At eviction the policy reads block.instruction of each way.
  *
- * ----------------------------------------------------------------------------
- *  C. Storage (512 KB, 8-way L2 = 1,024 sets x 8 ways = 8,192 lines)
- * ----------------------------------------------------------------------------
- *    RRPV            8,192 x 2 bits = 16,384 bits (same as SRRIP)
- *    instruction bit 8,192 x 1 bit  =  8,192 bits (new)
- *    TOTAL                            24,576 bits = 3 KB, i.e. +8,192 bits
- *    over SRRIP, 0.2% of the L2 data array. No other state.
- *
- * ----------------------------------------------------------------------------
- *  D. Tunable parameters
- * ----------------------------------------------------------------------------
- *    Worth tuning: IRRIP_INSERT_INSTR, IRRIP_INSERT_DATA, IRRIP_DATA_HIT_MODE,
- *    IRRIP_DATA_HIT_STEP, IRRIP_EVICT_MODE (each changes one of the three
- *    parts above; values with 2-bit RRPVs are few, so every alternative is a
- *    single experiment point).
- *    Fixed: IRRIP_RRPV_BITS stays 2 to compare with the SRRIP baseline at the
- *    same storage; IRRIP_HIT_INSTR_RRPV = 0 is the point of the policy;
- *    IRRIP_INSERT_WRITEBACK and IRRIP_PROMOTE_ON_WB_HIT follow from "a
- *    writeback is not a demand" and only matter on write-heavy phases.
- *
- * ----------------------------------------------------------------------------
- *  E. Results (results/tables.md, 25M + 25M instructions)
- * ----------------------------------------------------------------------------
- *               speedup               L2C instr MPKI           L2C data MPKI
- *          lru(base) srrip irrip   lru   srrip  irrip      lru   srrip  irrip
- *  Trace1    1     0.9995 0.9995  10.34  10.56   9.77      7.36   7.08   7.88
- *  Trace2    1     1.0026 1.0244  18.85  17.78  12.27      8.50   7.96   9.13
- *  Trace3    1     0.9991 1.0004   1.12   1.20   0.96      2.83   2.84   2.87
- *  mean      1     1.0004 1.0081  10.11   9.85   7.66      6.23   5.96   6.62
- *  Exactly the intended trade: instruction MPKI drops 24% on average (35% on
- *  Trace2), data MPKI rises 6-7%, total L2 MPKI drops 13%, and IPC follows
- *  the instruction side because an instruction miss costs more than a data
- *  miss. Trace2 (largest instruction footprint) gains 2.4%; Trace3, whose
- *  instruction MPKI is already ~1, has nothing to gain, and Trace1 breaks
- *  even because its extra data misses cost about what its saved instruction
- *  misses gain. Plain SRRIP alone does almost nothing (+0.04%), so the gain
- *  comes from the instruction awareness, not from RRIP itself.
- *
- * ----------------------------------------------------------------------------
- *  F. Tuning experiments (no prefetcher, so the L2 sees only demand traffic)
- * ----------------------------------------------------------------------------
- *    t2a_insert  instructions at 0; data at 3
- *    t2a_promo   data hit -> 0 (SRRIP-HP for data); data hit -2
- *    t2a_evict   mode 0 (no tie-break: isolates its contribution); mode 2
+ *  Storage: 2-bit RRPV + 1 instruction bit per line = 3 x 8,192 = 24,576
+ *  bits, i.e. one bit per line more than SRRIP.
  * ============================================================================
  */
 
@@ -146,8 +124,9 @@
 #ifndef IRRIP_INSERT_INSTR
 #define IRRIP_INSERT_INSTR       1     // RRPV for an instruction fill (0 = most protected)
 #endif
+// TUNED (t2a_insert): data fills at maxRRPV, was maxRRPV-1 (speedup 1.0081 -> 1.0100 alone)
 #ifndef IRRIP_INSERT_DATA
-#define IRRIP_INSERT_DATA        (IRRIP_MAX_RRPV - 1)   // RRPV for a data / translation fill (SRRIP value)
+#define IRRIP_INSERT_DATA        IRRIP_MAX_RRPV         // RRPV for a data / translation fill
 #endif
 #ifndef IRRIP_INSERT_WRITEBACK
 #define IRRIP_INSERT_WRITEBACK   (IRRIP_MAX_RRPV - 1)   // RRPV when a writeback allocates in L2
@@ -168,8 +147,9 @@
 #endif
 
 // Eviction
+// TUNED (t2a_evict): mode 2, was 1 (speedup 1.0081 -> 1.0133 alone; mode 0 gives 1.0062)
 #ifndef IRRIP_EVICT_MODE
-#define IRRIP_EVICT_MODE         1     // 0: first line at maxRRPV (plain SRRIP)
+#define IRRIP_EVICT_MODE         2     // 0: first line at maxRRPV (plain SRRIP)
                                        // 1: among lines at maxRRPV prefer data over instruction
                                        // 2: as 1, and a data line at maxRRPV-1 beats an instruction line at maxRRPV
 #endif

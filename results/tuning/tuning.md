@@ -15,6 +15,8 @@ Signature table size. The ST misses on 54% of demand loads at 64 entries, so the
 
 Winner: `st256` (SPP_ST_ENTRIES=256)
 
+![t1_st](t1_st.png)
+
 ## t1_deg (task1)
 
 Degree per accuracy range (deliverable). 'fixed3' turns throttling off (degree 3 everywhere, like ip_stride) to show what throttling buys; 'aggr' and 'cons' move the whole table up and down.
@@ -28,6 +30,8 @@ Degree per accuracy range (deliverable). 'fixed3' turns throttling off (degree 3
 
 Winner: keep the default (no variant beats it by more than the noise margin)
 
+![t1_deg](t1_deg.png)
+
 ## t1_acc (task1)
 
 Accuracy thresholds (deliverable). Filter accuracy sits at 67-70%, i.e. inside the MID band; 'strict' and 'loose' shift every boundary by about 0.1 so the measured accuracy lands in a different band.
@@ -39,6 +43,8 @@ Accuracy thresholds (deliverable). Filter accuracy sits at 67-70%, i.e. inside t
 | strict | SPP_ACC_HIGH=0.85, SPP_ACC_MID=0.65, SPP_ACC_LOW=0.35, SPP_ACC_TOXIC=0.15 | 1.0079 | 46.798 | 10.177 | 5.663 |
 
 Winner: keep the default (no variant beats it by more than the noise margin)
+
+![t1_acc](t1_acc.png)
 
 ## t1_pt (task1)
 
@@ -53,6 +59,8 @@ Pattern-table confidence. 72% of SPP prefetches come from the pattern table, so 
 
 Winner: keep the default (no variant beats it by more than the noise margin)
 
+![t1_pt](t1_pt.png)
+
 ## t1_sig (task1)
 
 Signature length / PT size: 8 bits = 256-entry PT (saves 6.9 Kbit), 12 bits = 4096 entries, shift 2 keeps ~5 strides of history instead of ~3.
@@ -66,6 +74,8 @@ Signature length / PT size: 8 bits = 256-entry PT (saves 6.9 Kbit), 12 bits = 40
 
 Winner: keep the default (no variant beats it by more than the noise margin)
 
+![t1_sig](t1_sig.png)
+
 ## t1_fsm (task1)
 
 Uniform-stride FSM: confidence needed before uniform prefetching, and the hysteresis to return from NON_UNIFORM to UNIFORM.
@@ -77,6 +87,8 @@ Uniform-stride FSM: confidence needed before uniform prefetching, and the hyster
 | uconf2 | SPP_UCONF_THRESHOLD=2 | 1.0076 | 45.457 | 10.186 | 5.668 |
 
 Winner: keep the default (no variant beats it by more than the noise margin)
+
+![t1_fsm](t1_fsm.png)
 
 ## t1_epoch (task1)
 
@@ -90,6 +102,8 @@ Throttling epoch length: faster reaction vs. noisier accuracy estimates.
 
 Winner: keep the default (no variant beats it by more than the noise margin)
 
+![t1_epoch](t1_epoch.png)
+
 ## t1_filter (task1)
 
 Prefetch-filter reach (accuracy checker + duplicate filter): 128 vs 512 entries.
@@ -101,6 +115,8 @@ Prefetch-filter reach (accuracy checker + duplicate filter): 128 vs 512 entries.
 | f128 | SPP_FILTER_INDEX_BITS=7 | 1.0079 | 45.593 | 10.209 | 5.652 |
 
 Winner: keep the default (no variant beats it by more than the noise margin)
+
+![t1_filter](t1_filter.png)
 
 ## t2a_insert (task2a)
 
@@ -114,6 +130,8 @@ Insertion: instructions at 0 (stronger priority) and data at maxRRPV (data as ev
 
 Winner: `data3` (IRRIP_INSERT_DATA=3)
 
+![t2a_insert](t2a_insert.png)
+
 ## t2a_promo (task2a)
 
 Promotion: SRRIP-style data hit -> 0 vs. the default one-step promotion, and a two-step promotion.
@@ -126,6 +144,8 @@ Promotion: SRRIP-style data hit -> 0 vs. the default one-step promotion, and a t
 
 Winner: keep the default (no variant beats it by more than the noise margin)
 
+![t2a_promo](t2a_promo.png)
+
 ## t2a_evict (task2a)
 
 Eviction: plain SRRIP victim choice (shows what the tie-break buys) vs. the stronger mode 2.
@@ -137,6 +157,8 @@ Eviction: plain SRRIP victim choice (shows what the tie-break buys) vs. the stro
 | plain | IRRIP_EVICT_MODE=0 | 1.0062 | 14.675 | 8.205 | 6.471 |
 
 Winner: `strong` (IRRIP_EVICT_MODE=2)
+
+![t2a_evict](t2a_evict.png)
 
 ## t2b_thr (task2b)
 
@@ -153,6 +175,8 @@ Winner: `strong` (IRRIP_EVICT_MODE=2)
 
 Winner: keep the default (no variant beats it by more than the noise margin)
 
+![t2b_thr](t2b_thr.png)
+
 ## t2b_thr_ratio (task2b)
 
 Same 5 thresholds with the ratio alone (exactly the spec's formula), isolating the threshold's effect from the duel guard.
@@ -168,6 +192,8 @@ Same 5 thresholds with the ratio alone (exactly the spec's formula), isolating t
 
 Winner: `t040` (DIRRIP_DECISION_MODE=0, DIRRIP_THRESHOLD=0.4)
 
+![t2b_thr_ratio](t2b_thr_ratio.png)
+
 ## t2b_mode (task2b)
 
 Decision logic: ratio only vs. classic duel only vs. both (default).
@@ -179,6 +205,8 @@ Decision logic: ratio only vs. classic duel only vs. both (default).
 | default (dyn_irrip) | (defaults) | 1.0062 | 14.525 | 8.296 | 6.229 |
 
 Winner: `ratio` (DIRRIP_DECISION_MODE=0)
+
+![t2b_mode](t2b_mode.png)
 
 ## t2b_leaders (task2b)
 
@@ -192,6 +220,8 @@ Leader sets per policy (deliverable): 16 = less sampling, fewer sets stuck on th
 
 Winner: `l16` (DIRRIP_LEADER_SETS=16)
 
+![t2b_leaders](t2b_leaders.png)
+
 ## t2b_epoch (task2b)
 
 Decision epoch: 4K accesses (fast, noisy; switches are already frequent at 16K) vs 64K (stable).
@@ -203,6 +233,8 @@ Decision epoch: 4K accesses (fast, noisy; switches are already frequent at 16K) 
 | e64k | DIRRIP_EPOCH_ACCESSES=65536 | 1.0055 | 14.647 | 8.480 | 6.167 |
 
 Winner: keep the default (no variant beats it by more than the noise margin)
+
+![t2b_epoch](t2b_epoch.png)
 
 ## t2b_cost (task2b)
 
@@ -217,6 +249,8 @@ Instruction-miss cost c in the duel guard. Static I-RRIP beats dynamic, so the g
 
 Winner: keep the default (no variant beats it by more than the noise margin)
 
+![t2b_cost](t2b_cost.png)
+
 ## t2b_hyst (task2b)
 
 Hysteresis and guard margin: no band vs. a wide band plus a 5% guard margin (fewer switches).
@@ -229,6 +263,8 @@ Hysteresis and guard margin: no band vs. a wide band plus a 5% guard margin (few
 
 Winner: keep the default (no variant beats it by more than the noise margin)
 
+![t2b_hyst](t2b_hyst.png)
+
 ## t3_insert (task3)
 
 Prefetch insertion position: far = maxRRPV-1 (same as demand data, i.e. no distant insertion), and everything far (L2-only prefetches too).
@@ -240,6 +276,8 @@ Prefetch insertion position: far = maxRRPV-1 (same as demand data, i.e. no dista
 | allfar | DIRRIP_PF_USE_FILL_LEVEL=0, DIRRIP_PF_ADAPTIVE=0 | 1.0146 | 13.948 | 8.274 | 5.674 |
 
 Winner: keep the default (no variant beats it by more than the noise margin)
+
+![t3_insert](t3_insert.png)
 
 ## t3_ablate (task3)
 
@@ -254,6 +292,8 @@ Ablation of each prefetch-awareness mechanism (rationale deliverable): turning o
 
 Winner: keep the default (no variant beats it by more than the noise margin)
 
+![t3_ablate](t3_ablate.png)
+
 ## t3_reuse (task3)
 
 Reuse threshold for near insertion. Measured L2 prefetch reuse is ~3%, so 0.5 never fires; only thresholds below 0.1 can change anything.
@@ -266,6 +306,8 @@ Reuse threshold for near insertion. Measured L2 prefetch reuse is ~3%, so 0.5 ne
 
 Winner: keep the default (no variant beats it by more than the noise margin)
 
+![t3_reuse](t3_reuse.png)
+
 ## t3_spp (task3)
 
 Cross-task interaction: with L2 now absorbing useless prefetches at maxRRPV, a more aggressive SPP may pay off where it did not with LRU.
@@ -276,3 +318,44 @@ Cross-task interaction: with L2 now absorbing useless prefetches at maxRRPV, a m
 | default (spp_pf_dyn_irrip) | (defaults) | 1.0150 | 8.707 | 8.192 | 5.688 |
 
 Winner: keep the default (no variant beats it by more than the noise margin)
+
+![t3_spp](t3_spp.png)
+
+## task1_final (task1)
+
+The per-experiment winners of task1 combined into one build.
+
+| variant | knobs | speedup | coverage | L2C instr MPKI | L2C data MPKI |
+|---|---|---|---|---|---|
+| **best** | SPP_ST_ENTRIES=256 | 1.0130 | 10.312 | 10.163 | 5.500 |
+| default (spp) | (defaults) | 1.0079 | 8.699 | 10.195 | 5.651 |
+
+Winner: `best` (SPP_ST_ENTRIES=256)
+
+![task1_final](task1_final.png)
+
+## task2a_final (task2a)
+
+The per-experiment winners of task2a combined into one build.
+
+| variant | knobs | speedup | l2c_load_mpki | L2C instr MPKI | L2C data MPKI |
+|---|---|---|---|---|---|
+| **best** | IRRIP_INSERT_DATA=3, IRRIP_EVICT_MODE=2 | 1.0135 | 14.350 | 6.203 | 8.148 |
+| default (irrip) | (defaults) | 1.0081 | 14.289 | 7.665 | 6.624 |
+
+Winner: `best` (IRRIP_INSERT_DATA=3, IRRIP_EVICT_MODE=2)
+
+![task2a_final](task2a_final.png)
+
+## task2b_final (task2b)
+
+The per-experiment winners of task2b combined into one build.
+
+| variant | knobs | speedup | l2c_load_mpki | L2C instr MPKI | L2C data MPKI |
+|---|---|---|---|---|---|
+| **best** | DIRRIP_DECISION_MODE=0, DIRRIP_LEADER_SETS=16, DIRRIP_THRESHOLD=0.4 | 1.0077 | 14.377 | 7.819 | 6.558 |
+| default (dyn_irrip) | (defaults) | 1.0062 | 14.525 | 8.296 | 6.229 |
+
+Winner: `best` (DIRRIP_DECISION_MODE=0, DIRRIP_LEADER_SETS=16, DIRRIP_THRESHOLD=0.4)
+
+![task2b_final](task2b_final.png)

@@ -13,7 +13,7 @@ Three tables, all sized by knobs in the single `TUNABLE PARAMETERS` block at the
 | Prefetch filter, 256 entries, direct mapped | low 8 bits of the block address | valid 1, tag 8, useful 1, class 1 = **11** |
 | Throttle registers | | issued counter 16, useful counter 16, epoch counter 11, degree 3 = **46** |
 
-**Total at defaults: 64×54 + 1024×9 + 256×11 + 46 = 3,456 + 9,216 + 2,816 + 46 = 15,534 bits (1,942 bytes).** `l1d_prefetcher_final_stats()` prints this breakdown, recomputed from the knobs, at the end of every run, so the number in the report always matches the build.
+**Total at the tuned defaults: 256×56 + 1024×9 + 256×11 + 46 = 14,336 + 9,216 + 2,816 + 46 = 26,414 bits (3,302 bytes).** (Before tuning, with a 64-entry ST: 15,534 bits.) `l1d_prefetcher_final_stats()` prints this breakdown, recomputed from the knobs, at the end of every run, so the number in the report always matches the build.
 
 On every L1D demand load (`l1d_prefetcher_operate`):
 
@@ -52,7 +52,7 @@ Thresholds 0.75 / 0.5 / 0.25 split the range evenly. The 0.10 "toxic" cut comes 
 
 | Knob | Default | Range | Trade-off | Class |
 |---|---|---|---|---|
-| `SPP_ST_ENTRIES` | 64 | 16–256 | More IPs tracked concurrently vs. 54 bits each and a wider fully associative search | Tune |
+| `SPP_ST_ENTRIES` | 256 (tuned; was 64) | 16–256 | More IPs tracked concurrently vs. 54 bits each and a wider fully associative search | Tune |
 | `SPP_IP_TAG_BITS` | 10 | 6–16 | Fewer bits cause IP aliasing (`ip_stride` uses 8) | Leave |
 | `SPP_ADDR_BITS` | 16 | 12–58 | Stride is computed modulo 2^bits. 16 is ample, since only ±63 is usable | Fixed |
 | `SPP_STRIDE_BITS` | 7 | 7 | ±63 blocks covers every in-page target of a 64-block page | Fixed |

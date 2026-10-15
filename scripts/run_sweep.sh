@@ -1,6 +1,6 @@
 #!/bin/bash
 # Task 2B sensitivity study: build and run dyn_irrip with 5 thresholds.
-#   scripts/run_sweep.sh                                   # thresholds 0.05 0.10 0.15 0.25 0.40
+#   scripts/run_sweep.sh                                   # thresholds 0.30 0.40 0.50 0.60 0.70 (centred on the measured ratios; see dyn_irrip.l2c_repl 2B-4)
 #   THRESHOLDS="0.1 0.2 0.3 0.4 0.5" scripts/run_sweep.sh
 #   MODE=0 scripts/run_sweep.sh        # ratio-only decision (pure threshold effect, exactly the spec hint)
 #   PREF=spp REPL=pf_dyn_irrip scripts/run_sweep.sh        # same sweep for Task 3
@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 source scripts/configs.sh
 
-THRESHOLDS=${THRESHOLDS:-"0.05 0.10 0.15 0.25 0.40"}
+THRESHOLDS=${THRESHOLDS:-"0.30 0.40 0.50 0.60 0.70"}
 PREF=${PREF:-no}
 REPL=${REPL:-dyn_irrip}
 PREFIX=${PREFIX:-$([ "$REPL" = dyn_irrip ] && echo dyn || echo "$REPL")}

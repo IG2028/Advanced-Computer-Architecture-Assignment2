@@ -1,5 +1,7 @@
 # PA2 implementation notes
 
+> **After tuning** (results/tuning/tuning.md) the defaults changed: SPP ST 256 entries; I-RRIP data insertion at maxRRPV and eviction mode 2; dynamic I-RRIP with the ratio-only decision, threshold 0.40 and 16 leader sets per policy. Each changed value is marked `TUNED` in the code. The design notes below were written before tuning; where they disagree, the header comments in the code are current.
+
 | Task | File | Doc |
 |---|---|---|
 | 1B SPP | `prefetcher/spp.l1d_pref` | [task1_spp.md](task1_spp.md) |

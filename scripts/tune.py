@@ -422,7 +422,10 @@ def ranked(exp, short=False):
         ref_rows = load_config(os.path.join(ROOT, "results", sub, "runs", "ref__" + exp["ref"]))
     else:
         base = load_config(os.path.join(ROOT, "results", "baseline"))
-        ref_rows = load_config(os.path.join(ROOT, "results", exp["ref"]))
+        # the defaults the experiments were run against were archived in
+        # results/pre_tuning/ once the tuned values became the new defaults
+        old = os.path.join(ROOT, "results", "pre_tuning", exp["ref"])
+        ref_rows = load_config(old if os.path.isdir(old) else os.path.join(ROOT, "results", exp["ref"]))
     out = [("default (%s)" % exp["ref"], None, summarize(ref_rows, base))] if ref_rows else []
     for v, spec in exp["variants"].items():
         rows = load_config(os.path.join(ROOT, "results", sub, "runs", "%s__%s" % (exp["name"], v)))
