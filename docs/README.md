@@ -6,8 +6,9 @@
 |---|---|---|
 | 1B SPP | `prefetcher/spp.l1d_pref` | [task1_spp.md](task1_spp.md) |
 | 2A I-RRIP (+ `isInstruction` plumbing) | `replacement/irrip.l2c_repl`, `inc/cache.h`, `src/cache.cc`, `src/ooo_cpu.cc`, `replacement/*` | [task2a_irrip.md](task2a_irrip.md) |
-| 2B Dynamic I-RRIP | `replacement/dyn_irrip.l2c_repl` (`PREFETCH_AWARE 0`) | [task2b_dyn_irrip.md](task2b_dyn_irrip.md) |
-| 3 Prefetch-aware Dynamic I-RRIP | `replacement/dyn_irrip.l2c_repl` (`PREFETCH_AWARE 1`), wrapper `replacement/pf_dyn_irrip.l2c_repl` | [task3_pf_dyn_irrip.md](task3_pf_dyn_irrip.md) |
+| 2B Dynamic I-RRIP | `replacement/dyn_irrip.l2c_repl` (built with no prefetcher) | [task2b_dyn_irrip.md](task2b_dyn_irrip.md) |
+| 3 Prefetch-aware Dynamic I-RRIP | `replacement/dyn_irrip.l2c_repl` (built with `spp`) | [task3_prefetch_aware.md](task3_prefetch_aware.md) |
+| Report | `report/Summary.tex` | |
 
 | Parameter tuning (all tasks) | `scripts/tune.py` | [tuning.md](tuning.md) |
 
@@ -37,7 +38,7 @@ Each code file has every knob in one `TUNABLE PARAMETERS` block, and every knob 
 Run everything from the repository root. Traces are `traces/Trace1.gz`, `traces/Trace2.gz` and `traces/Trace3.gz` (`TRACE_DIR=...` overrides the directory).
 
 ```bash
-scripts/build_all.sh                       # 8 configs: baseline ip_stride spp rrip irrip dyn_irrip spp_dyn_irrip spp_pf_dyn_irrip
+scripts/build_all.sh                       # 7 configs: baseline ip_stride spp rrip irrip dyn_irrip spp_pf_dyn_irrip
 JOBS=8 scripts/run_all.sh                  # 25M warmup + 25M sim on every trace -> results/<config>/<trace>.txt (resumable)
 scripts/run_sweep.sh                       # Task 2B: 5 thresholds -> results/dynT_<t>/
 python3 scripts/parse_results.py           # -> results/summary.csv, results/tables.md

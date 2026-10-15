@@ -1,10 +1,10 @@
 # Task 3: SPP with prefetch-aware Dynamic I-RRIP
 
-Code: `PREFETCH_AWARE 1` paths in [`replacement/dyn_irrip.l2c_repl`](../replacement/dyn_irrip.l2c_repl). The spec asks for Task 3 to live in that file. [`replacement/pf_dyn_irrip.l2c_repl`](../replacement/pf_dyn_irrip.l2c_repl) is a two-line wrapper that switches the knob on, so both binaries can exist at once:
+Code: the `PREFETCH_AWARE` paths in [`replacement/dyn_irrip.l2c_repl`](../replacement/dyn_irrip.l2c_repl), on by default. The spec asks for Task 3 to live in that file. Without a prefetcher they never trigger, so the same file builds Task 2B:
 
 ```
-./build_champsim.sh spp pf_dyn_irrip spp_pf_dyn_irrip     # Task 3
-./build_champsim.sh spp dyn_irrip    spp_dyn_irrip        # ablation: same pair without prefetch awareness
+./build_champsim.sh spp dyn_irrip spp_pf_dyn_irrip        # Task 3
+./build_champsim.sh no  dyn_irrip dyn_irrip               # Task 2B
 ```
 
 ## The problem
@@ -60,7 +60,7 @@ Extra storage: 1 prefetch bit per line (8,192), already present in `BLOCK` for C
 
 | Knob | Default | Range | Trade-off | Class |
 |---|---|---|---|---|
-| `PREFETCH_AWARE` | 0 (1 in the wrapper) | 0 / 1 | Task 2B vs. Task 3 | Fixed per build |
+| `PREFETCH_AWARE` | 1 | 0 / 1 | 0 = the `spp_dyn_irrip` ablation | Fixed |
 | `DIRRIP_PF_INSERT_FAR` | 3 | 2–3 | Insertion for FILL_L1 prefetches under low reuse | **Tune** |
 | `DIRRIP_PF_INSERT_NEAR` | 2 | 1–2 | Insertion for L2-only or high-reuse prefetches | Tune |
 | `DIRRIP_PF_USE_FILL_LEVEL` | 1 | 0 / 1 | Use the FILL_L2 hint | Tune (ablation) |

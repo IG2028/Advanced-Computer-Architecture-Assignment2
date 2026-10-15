@@ -9,8 +9,10 @@ CONFIGS=(
   "rrip:no:rrip"                           # SRRIP reference for Task 2
   "irrip:no:irrip"                         # Task 2A
   "dyn_irrip:no:dyn_irrip"                 # Task 2B  (default threshold)
-  "spp_dyn_irrip:spp:dyn_irrip"            # Task 3 ablation: SPP + dynamic I-RRIP without prefetch awareness
-  "spp_pf_dyn_irrip:spp:pf_dyn_irrip"      # Task 3
+  "spp_pf_dyn_irrip:spp:dyn_irrip"         # Task 3 (dyn_irrip.l2c_repl is prefetch aware by default)
+  # results/spp_dyn_irrip is the Task 3 ablation without prefetch awareness; to rebuild it:
+  #   scripts/make_variant.sh replacement/dyn_irrip.l2c_repl dyn_irrip_unaware PREFETCH_AWARE=0
+  #   and add "spp_dyn_irrip:spp:dyn_irrip_unaware" here
 )
 
 WARMUP=${WARMUP:-25000000}

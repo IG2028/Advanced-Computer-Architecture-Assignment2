@@ -1,6 +1,6 @@
 # Task 2B: Dynamic I-RRIP (set dueling)
 
-Code: [`replacement/dyn_irrip.l2c_repl`](../replacement/dyn_irrip.l2c_repl) with `PREFETCH_AWARE 0` (the default). Build with `./build_champsim.sh no dyn_irrip dyn_irrip`.
+Code: [`replacement/dyn_irrip.l2c_repl`](../replacement/dyn_irrip.l2c_repl) (its prefetch handling is inert without a prefetcher). Build with `./build_champsim.sh no dyn_irrip dyn_irrip`.
 
 ## Design
 

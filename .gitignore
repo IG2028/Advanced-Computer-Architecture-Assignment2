@@ -6,3 +6,4 @@ prefetcher/tp_*.l1d_pref
 replacement/tr_*.l2c_repl
 build_*.log
 scripts/__pycache__/
+replacement/dyn_irrip_t*.l2c_repl

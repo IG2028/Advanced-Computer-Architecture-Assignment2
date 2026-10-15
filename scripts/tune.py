@@ -170,20 +170,20 @@ EXPERIMENTS = [
          variants={"h0": R(DIRRIP_HYSTERESIS=0.0), "h15": R(DIRRIP_HYSTERESIS=0.15, DIRRIP_GUARD_MARGIN=0.05)}),
 
     # ------------------------------ Task 3 (SPP + prefetch-aware dynamic I-RRIP) ------------------------------
-    dict(name="t3_insert", task="task3", pref="spp", repl="pf_dyn_irrip", ref="spp_pf_dyn_irrip", metric="l2c_load_mpki",
+    dict(name="t3_insert", task="task3", pref="spp", repl="dyn_irrip", ref="spp_pf_dyn_irrip", metric="l2c_load_mpki",
          why="Prefetch insertion position: far = maxRRPV-1 (same as demand data, i.e. no distant insertion), and "
              "everything far (L2-only prefetches too).",
          variants={"far2": R(DIRRIP_PF_INSERT_FAR=2), "allfar": R(DIRRIP_PF_USE_FILL_LEVEL=0, DIRRIP_PF_ADAPTIVE=0)}),
-    dict(name="t3_ablate", task="task3", pref="spp", repl="pf_dyn_irrip", ref="spp_pf_dyn_irrip", metric="l2c_load_mpki",
+    dict(name="t3_ablate", task="task3", pref="spp", repl="dyn_irrip", ref="spp_pf_dyn_irrip", metric="l2c_load_mpki",
          why="Ablation of each prefetch-awareness mechanism (rationale deliverable): turning one off at a time "
              "shows what each contributes. spp_dyn_irrip already measures turning all of them off.",
          variants={"nofirstuse": R(DIRRIP_PF_FIRST_USE_AS_INSERT=0), "noevict": R(DIRRIP_PF_EVICT_FIRST=0),
                    "hitpromote": R(DIRRIP_PF_HIT_PROMOTE=1)}),
-    dict(name="t3_reuse", task="task3", pref="spp", repl="pf_dyn_irrip", ref="spp_pf_dyn_irrip", metric="l2c_load_mpki",
+    dict(name="t3_reuse", task="task3", pref="spp", repl="dyn_irrip", ref="spp_pf_dyn_irrip", metric="l2c_load_mpki",
          why="Reuse threshold for near insertion. Measured L2 prefetch reuse is ~3%, so 0.5 never fires; only "
              "thresholds below 0.1 can change anything.",
          variants={"r003": R(DIRRIP_PF_REUSE_HIGH=0.03), "r008": R(DIRRIP_PF_REUSE_HIGH=0.08)}),
-    dict(name="t3_spp", task="task3", pref="spp", repl="pf_dyn_irrip", ref="spp_pf_dyn_irrip", metric="coverage",
+    dict(name="t3_spp", task="task3", pref="spp", repl="dyn_irrip", ref="spp_pf_dyn_irrip", metric="coverage",
          why="Cross-task interaction: with L2 now absorbing useless prefetches at maxRRPV, a more aggressive SPP "
              "may pay off where it did not with LRU.",
          variants={"aggr": {"pref": dict(SPP_DEGREE_HIGH=6, SPP_DEGREE_MID=4, SPP_DEGREE_LOW=3, SPP_DEGREE_POOR=1,

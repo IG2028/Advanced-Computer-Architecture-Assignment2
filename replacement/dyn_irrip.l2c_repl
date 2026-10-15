@@ -1,14 +1,17 @@
 /*
  * ============================================================================
- *  Task 2B : Dynamic I-RRIP (set dueling)        [PREFETCH_AWARE = 0]
- *  Task 3  : Prefetch-aware Dynamic I-RRIP       [PREFETCH_AWARE = 1]
+ *  Task 2B : Dynamic I-RRIP (set dueling)
+ *  Task 3  : the same policy, made aware of prefetched lines
  * ============================================================================
  *
  *  Both tasks live in this one file, as the assignment asks for Task 3 to be
- *  built into replacement/dyn_irrip.l2c_repl. PREFETCH_AWARE defaults to 0
- *  so `./build_champsim.sh no dyn_irrip ...` is Task 2B, and
- *  replacement/pf_dyn_irrip.l2c_repl (two lines: define PREFETCH_AWARE 1,
- *  include this file) is Task 3, so both can be built side by side.
+ *  built into replacement/dyn_irrip.l2c_repl. The prefetch-awareness code
+ *  (PREFETCH_AWARE, on by default) only acts on PREFETCH packets and on lines
+ *  with the prefetch bit set, and without an L1D prefetcher no such packet or
+ *  line ever reaches the L2. So the one file is both tasks:
+ *      ./build_champsim.sh no  dyn_irrip dyn_irrip          # Task 2B
+ *      ./build_champsim.sh spp dyn_irrip spp_pf_dyn_irrip   # Task 3
+ *  (results/spp_dyn_irrip is the Task 3 ablation built with PREFETCH_AWARE 0.)
  *
  *  Contents of this comment
  *    2B-1  The mechanism
@@ -202,7 +205,7 @@
  *  BLOCK says whether a line was prefetched and not yet demanded (cache.cc
  *  clears it on the first demand hit, after this policy has seen it).
  *
- *  Ideas considered and dropped (see docs/task3_pf_dyn_irrip.md): promoting
+ *  Ideas considered and dropped (see docs/task3_prefetch_aware.md): promoting
  *  on prefetch hits (exactly the pollution PACMan measured; kept only as the
  *  ablation knob DIRRIP_PF_HIT_PROMOTE), an instruction-region table and
  *  L2->L1 feedback bits (SPP prefetches data only, so instruction locality
@@ -230,7 +233,7 @@
 
 // ---------- Which task ----------
 #ifndef PREFETCH_AWARE
-#define PREFETCH_AWARE              0      // 0: Task 2B   1: Task 3
+#define PREFETCH_AWARE              1      // 1: Task 3 prefetch handling (inert without a prefetcher); 0: ablation
 #endif
 
 // ---------- RRPV ----------

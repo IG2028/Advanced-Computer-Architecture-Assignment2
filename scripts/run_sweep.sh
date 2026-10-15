@@ -3,7 +3,7 @@
 #   scripts/run_sweep.sh                                   # thresholds 0.30 0.40 0.50 0.60 0.70 (centred on the measured ratios; see dyn_irrip.l2c_repl 2B-4)
 #   THRESHOLDS="0.1 0.2 0.3 0.4 0.5" scripts/run_sweep.sh
 #   MODE=0 scripts/run_sweep.sh        # ratio-only decision (pure threshold effect, exactly the spec hint)
-#   PREF=spp REPL=pf_dyn_irrip scripts/run_sweep.sh        # same sweep for Task 3
+#   PREF=spp PREFIX=spp_dyn scripts/run_sweep.sh           # same sweep with SPP (Task 3)
 # Each point becomes config "dynT_<threshold>" (or "<REPL>T_<threshold>") under results/.
 # Run from the repository root.
 set -euo pipefail
