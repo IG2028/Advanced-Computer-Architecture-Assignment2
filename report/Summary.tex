@@ -27,9 +27,10 @@
     backgroundcolor=\color{gray!10}
 }
 
-% Plots: results/plots/*.png in the repository. When compiling elsewhere,
+% Plots: results/plots/*.png and results/tuning/*.png in the repository.
+% When compiling elsewhere,
 % put the PNGs next to this file or in plots/.
-\graphicspath{{../results/plots/}{plots/}{./}}
+\graphicspath{{../results/plots/}{../results/tuning/}{plots/}{tuning/}{./}}
 
 \newcommand{\cfg}[1]{\texttt{#1}}
 \newcommand{\resplot}[2]{%
@@ -231,7 +232,7 @@ while SPP falls back to the PT and is 43\% accurate.
 
 \section{Storage overhead}
 
-\begin{table}[H]\centering
+\begin{table}[H]\centering\small
 \begin{tabular}{l l r r r}
 \toprule
 Structure & Fields (bits) & Entries & Bits/entry & Total bits\\
@@ -242,7 +243,7 @@ Pattern Table   & stride 7, confidence 2 & 1024 & 9 & 9{,}216\\
 Prefetch filter & valid 1, partial tag 8, useful 1, class 1 & 256 & 11 & 2{,}816\\
 Throttle regs   & issued 16, useful 16, epoch counter 11, degree 3 & 1 & 46 & 46\\
 \midrule
-\multicolumn{4}{l}{\textbf{Total}} & \textbf{26{,}414 bits = 3.2 KB}\\
+\multicolumn{4}{l}{\textbf{Total} (3.2 KB)} & \textbf{26{,}414}\\
 \bottomrule
 \end{tabular}
 \caption{SPP storage, bit by bit (also printed by every run).}
@@ -764,47 +765,34 @@ every trace} (geomean 0.2875 vs.\ 0.2851 and 0.2836; speedup 1.0214 vs.\
   prefetch hits cost 0.01--0.04\% each (tuning runs). Every piece points the right way.
 \end{itemize}
 
-%=====================================================================
-\chapter{Summary}
-%=====================================================================
 
-\begin{table}[H]\centering
-\begin{tabular}{l l r}
-\toprule
-Task & Configuration & Geomean speedup\\
-\midrule
-1A & IP-stride + LRU & 1.0024\\
-1B & SPP + LRU & 1.0130\\
-2A & SRRIP (reference) & 1.0004\\
-2A & I-RRIP & 1.0135\\
-2B & Dynamic I-RRIP & 1.0077\\
-3  & SPP + prefetch-aware dynamic I-RRIP & \textbf{1.0214}\\
-\bottomrule
-\end{tabular}
-\end{table}
-
+%=====================================================================
 \appendix
-\chapter{Repository layout and reproduction}
+\chapter{Tuning experiments}
+%=====================================================================
 
-\dirtree{%
-.1 /.
-.2 prefetcher/spp.l1d\_pref\DTcomment{Task 1B}.
-.2 replacement/irrip.l2c\_repl\DTcomment{Task 2A}.
-.2 replacement/dyn\_irrip.l2c\_repl\DTcomment{Tasks 2B and 3}.
-.2 inc/cache.h, src/cache.cc, src/ooo\_cpu.cc\DTcomment{isInstruction plumbing}.
-.2 scripts/\DTcomment{build, run, sweep, parse, plot, tune}.
-.2 results/\DTcomment{raw outputs, summary.csv, tables.md, plots/}.
-.3 tuning/\DTcomment{tuning runs and tuning.md}.
-.3 pre\_tuning/\DTcomment{results with the untuned defaults}.
-.2 report/Summary.tex\DTcomment{this report}.
-}
+Geometric-mean speedup over the baseline for each tuning variant
+(\cfg{results/tuning/}). Dotted lines: baseline (1.0) and the default.
 
-\begin{lstlisting}
-scripts/build_all.sh               # every configuration
-scripts/run_all.sh                 # 25M + 25M on Trace1-3 -> results/<config>/
-scripts/run_sweep.sh               # Task 2B: T = 0.30 ... 0.70
-python3 scripts/parse_results.py   # results/summary.csv, results/tables.md
-python3 scripts/plot_results.py    # results/plots/*.png
-\end{lstlisting}
+\section{Task 1B: SPP (L2C: LRU)}
+\resplotpair{t1_st.png}{Signature table size: 32 / 128 / 256}{t1_deg.png}{Degree table: fixed 3 / 6-4-3-1-0 / 3-2-1-1-0}
+\resplotpair{t1_acc.png}{Accuracy thresholds $\pm0.1$}{t1_pt.png}{PT confidence 1 / 3, lookahead confidence 3}
+\resplotpair{t1_sig.png}{Signature 8 / 12 bits, shift 2}{t1_fsm.png}{Uniform confidence 2, re-entry 2}
+\resplotpair{t1_epoch.png}{Throttling epoch 256 / 4096}{t1_filter.png}{Prefetch filter 128 / 512}
+\resplot{task1_final.png}{Task 1B: combined winners vs.\ default.}
+
+\section{Task 2A: I-RRIP (no prefetcher)}
+\resplotpair{t2a_insert.png}{Insertion: instructions at 0 / data at 3}{t2a_promo.png}{Promotion: data hit $\to$ 0 / $-2$}
+\resplotpair{t2a_evict.png}{Eviction: plain SRRIP / mode 2}{task2a_final.png}{Combined winners vs.\ default}
+
+\section{Task 2B: Dynamic I-RRIP (no prefetcher)}
+\resplotpair{t2b_thr.png}{Threshold $T$ 0.30--0.70, ratio AND guard}{t2b_thr_ratio.png}{Threshold $T$ 0.30--0.70, ratio only}
+\resplotpair{t2b_mode.png}{Decision: ratio only / duel only}{t2b_leaders.png}{Leader sets 16 / 64 per policy}
+\resplotpair{t2b_epoch.png}{Epoch 4K / 64K accesses}{t2b_cost.png}{Guard instruction-miss weight $c$ = 1 / 4 / 8}
+\resplotpair{t2b_hyst.png}{Hysteresis: none / wide band}{task2b_final.png}{Combined winners vs.\ default}
+
+\section{Task 3: SPP + prefetch-aware dynamic I-RRIP}
+\resplotpair{t3_insert.png}{Prefetch insertion: far = 2 / everything far}{t3_ablate.png}{Ablation: each mechanism off, hit promotion on}
+\resplotpair{t3_reuse.png}{Reuse threshold 0.03 / 0.08}{t3_spp.png}{Aggressive SPP degrees}
 
 \end{document}
