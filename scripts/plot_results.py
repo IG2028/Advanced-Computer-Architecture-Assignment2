@@ -25,6 +25,7 @@ try:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import matplotlib.ticker
 except ImportError:
     sys.exit("matplotlib is needed: pip install matplotlib")
 
@@ -33,11 +34,17 @@ PALETTE = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4
 # palette slot per config, chosen so configs that share a chart get well-separated hues
 CONFIG_SLOT = {"baseline": 0, "spp": 1, "dyn_irrip": 2, "spp_pf_dyn_irrip": 3, "spp_dyn_irrip": 4,
                "ip_stride": 5, "rrip": 6, "irrip": 7}
-# Metrics whose charts leave the baseline out (no bar, no legend entry): the
-# baseline issues no prefetches, so its accuracy is undefined and its coverage
-# is 0 by definition (task1b/task3 coverage and accuracy plots).
-NO_BASELINE_METRICS = {"coverage", "l1d_pf_accuracy"}
 BASELINE = "baseline"
+# Which configurations each chart shows (only bars that mean something get a
+# legend entry):
+#  - coverage / accuracy: only configs with an L1D prefetcher. The baseline and
+#    dyn_irrip issue no prefetches: accuracy is undefined, coverage is ~0.
+#  - speedup: no baseline bar (it is 1 by definition); the baseline is the
+#    dotted line at 1.0 instead, and bars grow up/down from that line on a
+#    zoomed axis, because every speedup is within a few percent of 1.
+#  - I-RRIP fraction: only the dynamic policy has one.
+PREFETCH_METRICS = {"coverage", "l1d_pf_accuracy"}
+ONLY_IF_PRESENT = {"dirrip_irrip_fraction"}
 TEXT = "#0b0b0b"
 MUTED = "#52514e"
 GRID = "#e4e3df"
@@ -83,23 +90,44 @@ def load(results):
     return data
 
 
+def has_metric(data, config, metric):
+    return any(not math.isnan(r.get(metric, float("nan"))) for r in data[config].values())
+
+
 def bar_chart(data, configs, metric, title, out):
-    if metric in NO_BASELINE_METRICS:
+    if metric in PREFETCH_METRICS:
+        configs = [c for c in configs if has_metric(data, c, "l1d_pf_accuracy")]
+    elif metric in ONLY_IF_PRESENT:
+        configs = [c for c in configs if has_metric(data, c, metric)]
+    elif metric == "speedup":
         configs = [c for c in configs if c != BASELINE]
+    if not configs:
+        return False
     traces = sorted({t for c in configs for t in data[c]})
     agg = geomean if metric in GEOMEAN_METRICS else amean
     groups = traces + ["mean"]
     n = len(configs)
     width = 0.8 / n
+    from_one = metric == "speedup"
+    all_vals = []
     fig, ax = plt.subplots(figsize=(max(6, 0.6 * len(groups) * max(1, n / 2)), 3.6))
     for i, c in enumerate(configs):
         vals = [data[c].get(t, {}).get(metric, float("nan")) for t in traces]
         vals.append(agg([data[c][t].get(metric, float("nan")) for t in data[c]]))
         xs = [g + (i - (n - 1) / 2) * width for g in range(len(groups))]
-        ax.bar(xs, [0 if math.isnan(v) else v for v in vals], width=width * 0.9,
-               color=color_for(c, configs), label=c, edgecolor="white", linewidth=0.5)
-    if metric == "speedup":
-        ax.axhline(1.0, color=MUTED, linewidth=0.8, linestyle="--")
+        all_vals += [v for v in vals if not math.isnan(v)]
+        if from_one:   # bar from the 1.0 line to the value (up = faster, down = slower)
+            ax.bar(xs, [0 if math.isnan(v) else v - 1.0 for v in vals], bottom=1.0, width=width * 0.9,
+                   color=color_for(c, configs), label=c, edgecolor="white", linewidth=0.5)
+        else:
+            ax.bar(xs, [0 if math.isnan(v) else v for v in vals], width=width * 0.9,
+                   color=color_for(c, configs), label=c, edgecolor="white", linewidth=0.5)
+    if from_one:
+        ax.axhline(1.0, color=TEXT, linewidth=1.0, linestyle=":")   # baseline = 1.0
+        lo, hi = min(all_vals + [1.0]), max(all_vals + [1.0])
+        pad = max(0.002, 0.15 * (hi - lo))
+        ax.set_ylim(lo - pad, hi + pad)                             # finer scale around 1
+        ax.yaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%.4f"))
     ax.set_xticks(range(len(groups)))
     ax.set_xticklabels(groups, rotation=35, ha="right")
     ax.set_ylabel(LABELS.get(metric, metric), color=TEXT, fontsize=9)
@@ -109,6 +137,7 @@ def bar_chart(data, configs, metric, title, out):
     fig.tight_layout()
     fig.savefig(out, dpi=200, bbox_inches="tight")
     plt.close(fig)
+    return True
 
 
 def sweep_chart(data, configs, prefix, metric, out):
@@ -119,9 +148,14 @@ def sweep_chart(data, configs, prefix, metric, out):
         ys.append(agg([data[c][t].get(metric, float("nan")) for t in data[c]]))
     fig, ax = plt.subplots(figsize=(5, 3.2))
     ax.plot(xs, ys, color=PALETTE[0], linewidth=2, marker="o", markersize=6)
+    if metric == "speedup":
+        ax.axhline(1.0, color=TEXT, linewidth=1.0, linestyle=":")   # baseline = 1.0
+        lo, hi = min([y for y in ys if not math.isnan(y)] + [1.0]), max([y for y in ys if not math.isnan(y)] + [1.0])
+        pad = max(0.002, 0.15 * (hi - lo))
+        ax.set_ylim(lo - pad, hi + pad)
     for x, y in zip(xs, ys):
         if not math.isnan(y):
-            ax.annotate("%.3f" % y, (x, y), textcoords="offset points", xytext=(0, 7), ha="center", fontsize=7, color=MUTED)
+            ax.annotate("%.4f" % y if metric == "speedup" else "%.3f" % y, (x, y), textcoords="offset points", xytext=(0, 7), ha="center", fontsize=7, color=MUTED)
     ax.set_xlabel("Decision threshold", color=TEXT, fontsize=9)
     ax.set_ylabel(("mean " if metric not in GEOMEAN_METRICS else "geomean ") + LABELS.get(metric, metric), color=TEXT, fontsize=9)
     ax.set_title("Dynamic I-RRIP threshold sensitivity", color=TEXT, fontsize=10, loc="left")
@@ -150,8 +184,8 @@ def main():
             tag += "_sweep"
         for metric in metrics:
             out = os.path.join(outdir, "%s_%s.png" % (tag, metric))
-            bar_chart(data, configs, metric, title, out)
-            print("wrote", out)
+            if bar_chart(data, configs, metric, title, out):
+                print("wrote", out)
             if spec[0].startswith("SWEEP:"):
                 prefix = spec[0][len("SWEEP:"):]
                 out = os.path.join(outdir, "%s_%s_line.png" % (tag, metric))
