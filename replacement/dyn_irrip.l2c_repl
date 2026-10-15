@@ -3,7 +3,7 @@
 //Parameters
 // task selection
 #ifndef PREFETCH_AWARE
-#define PREFETCH_AWARE 0      // 0: Task 2B   1: Task 3
+#define PREFETCH_AWARE 1     // 0: without prefetcher (Task 2B), 1: Task 3 with SPP
 #endif
 
 #ifndef DIRRIP_RRPV_BITS
@@ -38,13 +38,13 @@
 
 // Set dueling setup
 #ifndef DIRRIP_LEADER_SETS
-#define DIRRIP_LEADER_SETS 32  // leader sets PER POLICY 
+#define DIRRIP_LEADER_SETS 16  
 #endif
 #ifndef DIRRIP_DECISION_MODE
-#define DIRRIP_DECISION_MODE 2  // 0 ratio only, 1 duel only, 2 ratio AND duel
+#define DIRRIP_DECISION_MODE 0  
 #endif
 #ifndef DIRRIP_THRESHOLD
-#define DIRRIP_THRESHOLD 0.25  
+#define DIRRIP_THRESHOLD 0.40  
 #endif
 #ifndef DIRRIP_RATIO_MISS_WEIGHT
 #define DIRRIP_RATIO_MISS_WEIGHT 1.0    

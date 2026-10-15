@@ -5,7 +5,7 @@
 //Parameters
 
 #ifndef SPP_ST_ENTRIES
-#define SPP_ST_ENTRIES 64  
+#define SPP_ST_ENTRIES 256  
 #endif
 #ifndef SPP_IP_TAG_BITS
 #define SPP_IP_TAG_BITS 10  
@@ -64,7 +64,7 @@
 //   SPP_ACC_MID  <= acc < HIGH   -> SPP_DEGREE_MID
 //   SPP_ACC_LOW  <= acc < MID    -> SPP_DEGREE_LOW
 //   SPP_ACC_TOXIC<= acc < LOW    -> SPP_DEGREE_POOR
-//   acc < SPP_ACC_TOXIC          -> SPP_DEGREE_TOXIC   (0 = shadow mode)
+//   acc < SPP_ACC_TOXIC          -> SPP_DEGREE_TOXIC   
 #ifndef SPP_ACC_HIGH
 #define SPP_ACC_HIGH 0.75
 #endif
@@ -427,7 +427,8 @@ void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit
             SPP_PT_ENTRY &p = spp_pt[sig];
             uint32_t need = (step == 1) ? SPP_PT_CONF_THRESHOLD : SPP_PT_LOOKAHEAD_CONF;
             if (p.conf < need || !spp_usable_stride(p.stride))
-                break;                                 
+                break;
+            next_stride = p.stride;
             sig = spp_next_signature(sig, next_stride);
         }
 
